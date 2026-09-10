@@ -381,7 +381,22 @@ try:
         else:
             bad("未上传构建产物")
 
-        # --- 产物校验必须区分 ELF / PE，且不能弱到形同虚设 ---
+        # Windows 上用 tar 打包时，归档名里的盘符冒号会被 GNU tar 当成
+        # 「远程主机:路径」（tar: Cannot connect to D: resolve failed）。
+        # 必须加 --force-local（或改用相对路径）。
+        pkg = next((s for s in steps if s.get("name") == "Package extension"), None)
+        if pkg:
+            pkg_run = str(pkg.get("run", ""))
+            if "tar " in pkg_run and "Windows" in pkg_run:
+                if "--force-local" in pkg_run:
+                    ok("Windows 打包用 tar --force-local（避免盘符冒号被当成远程主机）")
+                else:
+                    bad("Windows 打包用 tar 但未加 --force-local —— "
+                        "归档路径含 'D:' 会报 Cannot connect to D: resolve failed")
+            if "Windows" not in pkg_run and "tar" in pkg_run:
+                wrn("打包步骤使用 tar 但未区分平台")
+
+        # 产物校验必须区分 ELF / PE，且不能弱到形同虚设 ---
         if "ELF 32-bit LSB shared object" in runs:
             ok("校验 Linux 产物为 32 位 ELF 共享对象")
         else:
