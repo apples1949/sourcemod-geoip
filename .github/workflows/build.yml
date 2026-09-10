@@ -267,12 +267,23 @@ jobs:
           echo "SourceMod product.version: $(tr -d '\n' < sm/product.version)"
           git -C sm log -1 --format='commit %h  %ad  %s' --date=short
 
+      # CC/CXX 不能写在步骤的 env: 里 —— 步骤 env 对所有平台一视同仁，
+      # Windows 条目没有 cc/cxx 键，会被渲染成**空字符串**并导出为环境变量。
+      # 而 AMBuild 的 detect_from_env() 优先读 CC/CXX，空值即报
+      # "Unable to find a suitable C compiler"（连 cl.exe 都不会去找）。
+      # 因此改为只在 Linux 上通过 GITHUB_ENV 设置；Windows 完全不设这两个变量。
+      - name: Set compilers (Linux only)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          {
+            echo "CC=${{ matrix.cc }}"
+            echo "CXX=${{ matrix.cxx }}"
+          } >> "$GITHUB_ENV"
+          echo "已设置 CC=${{ matrix.cc }} CXX=${{ matrix.cxx }}"
+
       - name: Build GeoIP extension
         shell: bash
-        # Linux 在此显式指定 clang；Windows 刻意不设 CC/CXX，交由 AMBuild 探测 MSVC
-        env:
-          CC: ${{ matrix.cc }}
-          CXX: ${{ matrix.cxx }}
         # 脚本会：核验 PR #2335 中文修复 -> 同步扩展源码 -> 裁剪构建列表为只构建 geoip
         #        -> 克隆 Metamod:Source（正确分支）+ mock SDK
         #        -> configure.py --sdks=present --no-mysql --targets=x86 -> ambuild

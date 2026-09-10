@@ -230,24 +230,42 @@ try:
         else:
             bad("未固定 Linux 的 clang-14")
 
-        # 致命陷阱：job 级 env 里 CC/CXX 引用 matrix 键。
-        # Windows 条目没有 cc/cxx 键 -> 渲染成**空字符串**；而 AMBuild 的
-        # detect_from_env() 优先读 CC/CXX，空值使探测命令里编译器名变空，
+        # 致命陷阱：任何**无条件**的步级/任务级 env 里出现 CC/CXX 并引用 matrix 键，
+        # 在缺少该键的条目（Windows）上会渲染成空字符串并被导出为环境变量。
+        # AMBuild 的 detect_from_env() 优先读 CC/CXX，空值使探测命令里编译器名变空，
         # 报 "Unable to find a suitable C compiler"（MSVC 其实已装好）。
-        job_env = build.get("env") or {}
-        for var in ("CC", "CXX"):
-            v = str(job_env.get(var, ""))
-            if v and "matrix." in v:
-                missing = [e.get("os_short") for e in
-                           (matrix.get("include") or [])
-                           if var.lower() not in e]
-                if missing:
-                    bad(f"job 级 env 的 {var} 引用了 {v}，但 {missing} 条目没有该键 "
-                        f"-> 会渲染成空字符串，AMBuild 会因空 CC/CXX 找不到编译器")
-                else:
-                    ok(f"job 级 {var} 引用 {v}，所有矩阵条目都有该键")
-            elif v:
-                ok(f"job 级 env 设了 {var}={v}")
+        # 这个坑踩了两次：先写在 job 级 env，再写到 Build 步骤的 env —— 都是无条件生效。
+        wf_steps = build.get("steps", [])
+        offenders = []
+        for scope_name, scope_env in [("job 级 env", build.get("env") or {})] + \
+                [("步骤 %r 的 env" % (s.get("name") or s.get("uses")),
+                  s.get("env") or {}) for s in wf_steps]:
+            for var in ("CC", "CXX"):
+                v = str(scope_env.get(var, ""))
+                if v and "matrix." in v:
+                    offenders.append((scope_name, var, v))
+        if offenders:
+            for scope_name, var, v in offenders:
+                bad(f"{scope_name} 无条件设置 {var}={v}：缺该 matrix 键的条目会得到空字符串，"
+                    f"AMBuild 将找不到编译器（应改为按平台在条件步骤里设置）")
+        else:
+            ok("CC/CXX 未出现在无条件 env 中（不会在 Windows 上变成空字符串）")
+
+        # 必须有一个仅在 Linux 生效的步骤来设置 CC/CXX
+        linux_env_step = None
+        for s in wf_steps:
+            run = str(s.get("run", ""))
+            if "GITHUB_ENV" in run and ("CC=" in run or "CXX=" in run):
+                linux_env_step = s
+                break
+        if linux_env_step is None:
+            wrn("未找到通过 GITHUB_ENV 设置 CC/CXX 的步骤")
+        else:
+            cond = str(linux_env_step.get("if", ""))
+            if "Linux" in cond:
+                ok(f"CC/CXX 仅在条件步骤中设置（if: {cond}）")
+            else:
+                bad(f"设置 CC/CXX 的步骤没有平台条件（if: {cond!r}）—— 其他平台会拿到空值")
         if "windows-2022" in str(matrix):
             ok("Windows 使用 windows-2022 runner（自带 MSVC）")
         else:
