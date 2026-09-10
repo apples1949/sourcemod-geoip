@@ -151,6 +151,7 @@ public void OnClientPostAdminCheck(int client)
 ├── tools/
 │   ├── build-geoip.sh            # 构建脚本（CI 与本地共用）
 │   ├── filter-build-scripts.py   # 裁剪 AMBuildScript：只构建 geoip 扩展
+│   ├── check-workflow-shell.py   # 对工作流里每个 run: 做 bash -n 语法检查
 │   ├── sync-upstream.py          # 同步上游源码（带 git blob SHA 校验）
 │   └── validate.py               # 仓库自检
 ├── .gitattributes
@@ -244,7 +245,12 @@ $ git hash-object extensions/geoip/maxminddb.c
 | --- | --- | --- | --- |
 | Linux | `ubuntu-22.04` | `clang-14` / `clang++-14` | `geoip.ext.so` |
 | Windows | `windows-2022` | MSVC（AMBuild 自动探测） | `geoip.ext.dll` |
-| SourceMod 版本 | `1.11-dev` 与 `1.12-dev`（Windows 目前只构建 1.12） | | |
+
+两个平台**各自**对 `1.11-dev` 与 `1.12-dev` 编译，共 4 个构建任务。
+
+> 为什么不共用一份 Windows 产物：DLL 里同样编入了对应分支的版本信息与接口
+> （`GetExtensionVerString()` 返回 `SOURCEMOD_VERSION`、并链接各自分支的 versionlib），
+> 和 Linux 的 `.so` 是同一个道理 —— 1.11 的服务端要用对 1.11 编译的那份。
 
 **Linux**：工具链在 workflow 里显式安装
 
@@ -269,6 +275,11 @@ sudo apt-get install -y clang-14 build-essential gcc-multilib g++-multilib \
 交由 AMBuild 自动探测（矩阵里 Windows 条目的 `cc`/`cxx` 留空）。
 只额外需要 AMBuild 与打包工具，`patch` 若缺失会自动回退到 `git apply`。
 
+> Windows runner 上预装的是 Python 3.12 + pip 26.x。注意**不要**在同一次 pip 调用里
+> 升级 pip 自身 —— 新版 pip 会直接报错拒绝：
+> `ERROR: To modify pip, please run the following command: ...`
+> 因此工作流只安装 `setuptools`/`wheel`，不升级 pip（venv 自带的 pip 足够装 AMBuild）。
+
 两点说明：
 
 - **必须有 i386 multilib 开发库**：目标是 x86，64 位宿主上缺了这些包，
@@ -277,7 +288,7 @@ sudo apt-get install -y clang-14 build-essential gcc-multilib g++-multilib \
 - **AMBuild 装在独立 venv 里**：Ubuntu 的 `python3` 受 PEP 668 保护，
   不能直接 `pip install` 到系统环境；venv 路径通过 `$GITHUB_PATH` 注入，
   构建脚本才能在 PATH 上找到 `ambuild` 命令。Windows 上 venv 的
-  `Scripts/` 布局由脚本自动识别。
+  `Scripts/` 布局、以及可用的 `python` 解释器都由工作流自动识别。
 
 > 早期版本这里用的是 SourceMod 官方 CI 的镜像
 > `ghcr.io/alliedmodders/build-containers/debian11-clang22`，
@@ -416,13 +427,19 @@ python3 tools/validate.py                                       # 自检会一�
 ## 仓库自检
 
 ```bash
-python3 tools/validate.py
+python3 tools/validate.py                    # 全部检查
+python3 tools/check-workflow-shell.py        # 只查工作流里的 shell 语法
 ```
 
-检查内容包括：文件清单完整性、`AMBuilder` 是否与上游字节一致（决定能否在源码树中编译）、
-**PR #2335 中文修复是否在源码中（`patches/` 完整性）**、
-工作流 YAML 结构（矩阵是否覆盖 1.11/1.12、是否拉取 submodule）、构建脚本关键参数，
-以及 `bash -n` 语法检查与文本文件编码/行尾规范。
+`validate.py` 检查内容包括：文件清单完整性、`AMBuilder` 是否与上游字节一致
+（决定能否在源码树中编译）、**PR #2335 中文修复是否在源码中（`patches/` 完整性）**、
+工作流 YAML 结构（矩阵是否覆盖两平台 × 两版本、产物校验是否按平台区分、
+release 的触发条件与权限）、构建脚本关键参数、
+**工作流里每个 `run:` 的 bash 语法**，以及文本文件编码/行尾规范。
+
+> `check-workflow-shell.py` 单独存在是有原因的：工作流的 `run:` 本身就是 shell 脚本，
+> 但平时不会被任何语法检查覆盖，只有 CI 跑起来才报错、反馈很慢
+> （本仓库曾把 heredoc 写进 `run:` 并弄坏 YAML 缩进，就属这一类）。
 
 ## 许可
 

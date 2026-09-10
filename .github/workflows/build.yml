@@ -55,6 +55,11 @@ jobs:
           - runner: windows-2022
             os_name: windows
             os_short: windows
+            sm_branch: '1.11-dev'
+            ext: dll
+          - runner: windows-2022
+            os_name: windows
+            os_short: windows
             sm_branch: '1.12-dev'
             ext: dll
 
@@ -105,13 +110,43 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m venv "$HOME/ambuild-venv" 2>/dev/null || python3 -m venv "$HOME/ambuild-venv"
-          VENV_BIN="$HOME/ambuild-venv/bin"
-          [ -d "$VENV_BIN" ] || VENV_BIN="$HOME/ambuild-venv/Scripts"   # Windows 布局
-          "$VENV_BIN/pip" install --quiet --upgrade pip setuptools wheel
-          "$VENV_BIN/pip" install --quiet "git+https://github.com/alliedmodders/ambuild.git"
+          # 选一个能真正执行 python 的解释器（Windows 上 WindowsApps 的 python3
+          # 是 Store 存根，可能不可用，因此优先 python）
+          PY=python
+          if ! "$PY" -c "import sys" >/dev/null 2>&1; then
+            PY=python3
+          fi
+          "$PY" -c "import sys; print('using', sys.executable, sys.version.split()[0])"
+
+          VENV="$HOME/ambuild-venv"
+          rm -rf "$VENV"
+          "$PY" -m venv "$VENV"
+
+          # venv 的布局随平台不同（Linux: bin/，Windows: Scripts/），且 MSYS 下
+          # bin/python 可能只是转发脚本。以“能真正执行”为准来选，而不是只看存在。
+          VENV_PY=""
+          for cand in "$VENV/bin" "$VENV/Scripts"; do
+            for exe in "$cand/python" "$cand/python.exe"; do
+              if [ -x "$exe" ] && "$exe" -c "import sys" >/dev/null 2>&1; then
+                VENV_PY="$exe"
+                break 2
+              fi
+            done
+          done
+          [ -n "$VENV_PY" ] || { echo "::error::无法在 $VENV 中定位可用的 python 解释器"; ls -1 "$VENV"; exit 1; }
+          echo "venv python: $VENV_PY"
+          "$VENV_PY" -c "import sys; print('venv version:', sys.version.split()[0])"
+
+          # 注意：不要把 pip 和 setuptools/wheel 放在同一次升级里。
+          # 新版 pip（windows-2022 上是 26.x）会拒绝修改自身并直接报错：
+          #   ERROR: To modify pip, please run the following command: ...
+          # 因此这里只装构建所需的 setuptools/wheel，不升级 pip
+          # （venv 自带的 pip 足够安装 AMBuild）。
+          "$VENV_PY" -m pip install --quiet --upgrade setuptools wheel
+          "$VENV_PY" -m pip install --quiet "git+https://github.com/alliedmodders/ambuild.git"
+
           # PATH 必须在这里写入，后续步骤才拿得到（GITHUB_PATH 只对之后的步骤生效）
-          echo "$VENV_BIN" >> "$GITHUB_PATH"
+          echo "$(dirname "$VENV_PY")" >> "$GITHUB_PATH"
 
       - name: Verify toolchain
         shell: bash

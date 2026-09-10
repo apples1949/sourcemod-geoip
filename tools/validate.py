@@ -61,7 +61,7 @@ else:
 
 for rel in [".github/workflows/build.yml", "tools/build-geoip.sh", "README.md",
             ".gitignore", ".gitattributes", "LICENSE",
-            "tools/filter-build-scripts.py",
+            "tools/filter-build-scripts.py", "tools/check-workflow-shell.py",
             "patches/README.md", "patches/geoip_fix_2335.patch"]:
     if os.path.isfile(os.path.join(REPO, rel)):
         ok(rel)
@@ -193,8 +193,11 @@ try:
         if not entries:
             bad("矩阵不是 include: 形式，无法确认平台覆盖")
         combos = {(str(e.get("os_short")), str(e.get("sm_branch"))) for e in entries}
-        # 必须有：Linux 两个 SourceMod 版本 + Windows
-        for want in [("linux", "1.11-dev"), ("linux", "1.12-dev"), ("windows", "1.12-dev")]:
+        # 两个平台 × 两个 SourceMod 版本都要覆盖：
+        # DLL 里同样编入了对应分支的版本信息与接口（同 Linux 的 .so），
+        # 不能拿 1.12 的 DLL 去配 1.11 的服务端。
+        for want in [("linux", "1.11-dev"), ("linux", "1.12-dev"),
+                     ("windows", "1.11-dev"), ("windows", "1.12-dev")]:
             if want in combos:
                 ok(f"矩阵包含 {want[0]} / SourceMod {want[1]}")
             else:
@@ -257,6 +260,18 @@ try:
             ok("安装 AMBuild（来自 alliedmodders/ambuild）")
         else:
             bad("未安装 AMBuild")
+
+        # 新版 pip（windows-2022 上是 26.x）拒绝在同一次调用里升级自身：
+        #   ERROR: To modify pip, please run the following command: ...
+        if re.search(r"pip install[^\n|]*--upgrade[^\n|]*\bpip\b", runs) or \
+           re.search(r"pip install[^\n|]*\bpip\b[^\n|]*setuptools", runs):
+            bad("在同一次 pip 调用里升级 pip 自身：新版 pip 会直接报错（实测 Windows runner 失败）")
+        else:
+            ok("未在 pip 调用里升级 pip 自身")
+        if "python -m venv" in runs or '"$PY" -m venv' in runs:
+            ok("用 python -m venv 建虚拟环境（不依赖系统 pip 可写）")
+        else:
+            bad("未使用 venv 隔离 AMBuild 安装")
 
         if "-m32" in runs:
             ok("Linux 自检 32 位编译能力（-m32 试编译）")
@@ -501,6 +516,23 @@ if bash:
         ok("源码树不存在时正确报错退出")
     else:
         bad(f"无效源码树未正确报错 (exit={rc}, err={err.strip()[:120]})")
+
+    # 工作流里每个 run: 都是 shell 脚本，逐条做语法检查
+    # （复用仓库自带工具，避免在这里重复实现一遍）
+    wfs_tool = os.path.join(REPO, "tools", "check-workflow-shell.py")
+    if os.path.isfile(wfs_tool):
+        p = subprocess.run([sys.executable, wfs_tool], capture_output=True,
+                           encoding="utf-8", errors="replace")
+        lines = [l for l in (p.stdout or "").strip().splitlines() if l.strip()]
+        if p.returncode == 0:
+            ok(f"工作流 shell 步骤语法检查通过（{lines[-1] if lines else ''}）")
+        else:
+            bad("工作流 shell 步骤存在语法错误（运行 tools/check-workflow-shell.py 查看）")
+            for line in lines:
+                if "[FAIL]" in line:
+                    print("         " + line.strip())
+    else:
+        wrn("缺少 tools/check-workflow-shell.py，跳过工作流 shell 语法检查")
 else:
     wrn("未找到 bash，跳过脚本语法检查")
 
