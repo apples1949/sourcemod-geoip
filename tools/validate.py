@@ -300,24 +300,37 @@ for needle, why in checks:
     else:
         bad(f"脚本缺少 {why} ({needle})")
 
-# --- SDK 参数：两代构建系统的差异用同一套写法解决 ---
-# 1.11：--sdks=none 是关键字
-# 1.12：SDK 改为 manifest 驱动，none 会被当成 SDK 名去找 hl2sdk-none 而失败；
-#       统一用 --sdks=present + mock（present 允许 SDK 缺失，mock 让 sdk_targets 非空）
+# --- SDK 参数与「至少一个可构建 SDK」的前提 ---
+# 1.12：SDK 改为 manifest 驱动，"none" 会被当成 SDK 名去找 hl2sdk-none 而失败；
+#       统一用 --sdks=present（缺失 SDK 只警告）并提供一个 mock SDK 目录，
+#       否则 1.12 报 No buildable SDKs were found、1.11 报 No applicable SDKs were found。
 if re.search(r"^\s*--sdks=none\s*\\", sh, re.M) or '"--sdks=none"' in sh:
     bad("configure 里把 --sdks 写死为 none：1.12 会报 Missing hl2sdks: none，应使用 $SDK_ARG")
 else:
     ok("configure 未写死 --sdks=none，改用变量 $SDK_ARG")
-for var, val in [('SDK_ARG="present"', "SDK 用 present（缺失的 SDK 只警告不报错）"),
-                 ('DEPS_SDKS="mock"', "拉取 mock SDK（保证 sdk_targets 非空）")]:
-    if var in sh:
-        ok(val)
-    else:
-        bad(f"缺少 {val}（期望出现 {var}）")
-if 'checkout-deps.sh" -s "$DEPS_SDKS"' in sh:
-    ok("依赖脚本用 $DEPS_SDKS（与 configure 的 SDK 策略一致）")
+if 'SDK_ARG="present"' in sh:
+    ok("SDK 用 present（缺失的 SDK 只警告不报错）")
 else:
-    bad("checkout-deps.sh 未使用 $DEPS_SDKS，可能与 configure 的 SDK 策略不一致")
+    bad("缺少 SDK_ARG=\"present\"")
+
+# checkout-deps.sh 的 -s mock 是不可用的：它会按普通 SDK 去 clone
+# hl2sdk 仓库的 mock 分支，而该分支不存在（mock 在独立仓库 hl2sdk-mock）
+if re.search(r"checkout-deps\.sh\"\s+-s\s+mock", sh):
+    bad("仍用 checkout-deps.sh -s mock：hl2sdk 仓库没有 mock 分支，必然失败")
+else:
+    ok("未误用 checkout-deps.sh -s mock")
+if "alliedmodders/hl2sdk-mock" in sh:
+    ok("直接从 alliedmodders/hl2sdk-mock 取 mock SDK")
+else:
+    bad("未获取 mock SDK —— configure 会因没有任何可构建 SDK 而失败")
+if "public/tier1/strtools.h" in sh:
+    ok("用 manifest include_paths 里的真实文件校验 mock 目录结构")
+else:
+    wrn("未校验 mock 目录结构，clone 不完整时难以定位")
+if "--hl2sdk-root" in sh:
+    ok("显式传 --hl2sdk-root，SDK 发现路径确定")
+else:
+    bad("未传 --hl2sdk-root，manifest 系统可能找不到 mock SDK")
 
 # --- 只构建 geoip：整棵树全量构建会连带编译 regex 等扩展并因缺依赖失败 ---
 if "filter-build-scripts.py" in sh:

@@ -295,15 +295,22 @@ ambuild
 manifest 驱动（`hl2sdk-manifests/SdkHelpers.ambuild`），`none` 不再是关键字，会被当成
 SDK 名去找 `hl2sdk-none`，直接报 `Missing hl2sdks: none`。
 
-现在统一用 `--sdks=present` + mock SDK，两代都成立：
+现在统一用 `--sdks=present` + 一个 **mock SDK 目录**，两代都成立：
 
 - `present` 的语义是「有什么用什么」，缺失的 SDK 只打印警告。其它取值会走
   `shouldRequireSdk()` → 缺失即 `raise`（`none` 失败就是这个机制）。
-- 需要至少一个可构建的 SDK，否则 1.12 报 `No buildable SDKs were found`；
-  `manifests/mock.json` 声明 `"source2": false`，能通过 `shouldIncludeSdk` 过滤，
-  使 mock 计入 `sdk_targets`。
-- mock 只用于满足 SDK 解析的前置条件：**geoip 不引用任何 SDK 头文件**，
+- **必须至少有一个可构建的 SDK**，否则 1.12 报 `No buildable SDKs were found`、
+  1.11 报 `No applicable SDKs were found`。所以脚本会准备一个 `hl2sdk-mock` 目录。
+- 这个 mock 只用于满足上面的前置条件：**geoip 不引用任何 SDK 头文件**，
   且其它扩展已被移出构建列表，所以它不会让任何东西被多编译出来。
+
+> **`checkout-deps.sh -s mock` 是不可用的。** 它把 `mock` 当普通 SDK 处理，会去执行
+> `git clone -b mock https://github.com/alliedmodders/hl2sdk` —— 而该仓库**没有 `mock`
+> 分支**（mock 在独立仓库 `alliedmodders/hl2sdk-mock`）。结果是 clone 失败、`deps/`
+> 里一个 SDK 都不剩，两个分支都会卡在「没有可用 SDK」。所以脚本改为：用
+> `checkout-deps.sh -s none` 只取 Metamod:Source，然后直接从 `alliedmodders/hl2sdk-mock`
+> 浅克隆 mock SDK，并用 manifest `include_paths` 里的真实文件（`public/tier1/strtools.h`）
+> 校验目录结构完整。configure 显式传 `--hl2sdk-root=$deps`，让 manifest 系统据此发现它。
 
 ### PR #2335 修复的核验（`tools/build-geoip.sh` 第 0 步）
 

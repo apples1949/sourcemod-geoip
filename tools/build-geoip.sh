@@ -111,22 +111,22 @@ public/safetyhook:include/safetyhook.hpp:SafetyHook（public/safetyhook）
 SUBMODULES
 )
 
-# 3) SDK 目标：geoip 不依赖任何 HL2SDK，但"不构建 SDK"的写法两代不同
-#    1.11：--sdks=none 是关键字，跳过所有 SDK
+# 3) SDK 参数：geoip 不依赖任何 HL2SDK，也不需要真正可用的 SDK 内容，
+#    但 configure 的 detectSDKs() 要求"至少有一个可构建的 SDK"，写法两代不同：
+#    1.11：--sdks=none 是关键字，跳过所有 SDK；但该分支仍有
+#          len(self.sdks) < 1 and not use_none 的校验，none 可满足
 #    1.12：SDK 改为 manifest 驱动（根 AMBuildScript 用 builder.Eval 加载
 #          hl2sdk-manifests/SdkHelpers.ambuild），"none" 不再是关键字，
 #          会被当成 SDK 名去找 hl2sdk-none，报 "Missing hl2sdks: none"
-#    统一采用 --sdks=present + mock SDK（自 1.11 起两代都可用，无需分支）：
+#    统一采用 --sdks=present + 一个 mock SDK 目录（见第 2 步）：
 #      - present 语义是"有什么用什么"：缺失的 SDK 只警告不报错
 #        （非 present 时会走 shouldRequireSdk -> 缺失即 raise，这正是 none 失败的机制）
-#      - 需要至少一个可构建的 SDK，否则 1.12 报 No buildable SDKs were found；
-#        1.11 的 mock 已被 use_present 直接纳入。1.12 的 manifests/mock.json 声明
-#        "source2": false，能通过 shouldIncludeSdk 过滤，使 mock 计入 sdk_targets
-#      - mock 只是让 SDK 解析满足前置条件；geoip 不引用任何 SDK 头文件。
-#        （即便 mock 缺失，1.12 下 present 也只警告并继续）
+#      - 有 mock 目录在场即可满足"至少一个可构建 SDK"，避免
+#        1.12 的 'No buildable SDKs were found' 与 1.11 的 'No applicable SDKs were found'
+#      - mock 仅用于满足前置条件：geoip 不引用任何 SDK 头文件，
+#        且其它扩展已被移出构建列表
 SDK_ARG="present"
-DEPS_SDKS="mock"
-echo "[sdk] --sdks=$SDK_ARG（仅构建 geoip，不需要真正的 HL2SDK；mock 用于满足 SDK 解析前置条件）"
+echo "[sdk] --sdks=$SDK_ARG（仅构建 geoip，不需要真正的 HL2SDK）"
 
 if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
 command -v "$PY" >/dev/null 2>&1 || die "找不到 python3"
@@ -215,21 +215,58 @@ if ! "$PY" "$REPO_ROOT/tools/filter-build-scripts.py" "$AMB_FILE" --keep geoip; 
 fi
 echo "[only] 已裁剪 AMBuildScript：仅构建 geoip 扩展"
 
-# --- 2. 依赖：Metamod:Source（+ mock SDK）--------------------------------------
-# 注意: SourceMod 的 AMBuildScript 在 detectSDKs() 里无条件要求一个 Metamod:Source 源码副本
-#       （用于 core 的 SourceHook 头文件），即使不构建任何 HL2SDK 也一样。用官方脚本拉取。
+# --- 2. 依赖：Metamod:Source + 一个可用的 SDK 目录 ------------------------------
+# 两个硬性前提（只构建 geoip 也不可省）：
+#   a) AMBuildScript 的 detectSDKs() 无条件校验 mms_root（core 的 SourceHook 头文件）
+#   b) 必须至少有一个"可构建的 SDK"，否则 1.11 报 'No applicable SDKs were found'，
+#      1.12 报 'No buildable SDKs were found'
+#
+# 注意 checkout-deps.sh 的 -s mock 是**不可用**的：它按普通 SDK 处理，会去
+#   git clone -b mock https://github.com/alliedmodders/hl2sdk
+# 而该仓库根本没有 mock 分支（mock 在独立仓库 alliedmodders/hl2sdk-mock），
+# 结果 clone 失败、deps 里一个 SDK 都不剩，两个分支都因此失败过。
 if [ "$SKIP_DEPS" -eq 0 ]; then
   mkdir -p "$DEPS_DIR"
   if [ ! -f "$SM_TREE/tools/checkout-deps.sh" ]; then
     die "SourceMod 源码树缺少 tools/checkout-deps.sh，无法拉取依赖（可加 --skip-deps 自行准备）"
   fi
-  info "拉取依赖（官方 tools/checkout-deps.sh -s $DEPS_SDKS；mock 会顺带 clone hl2sdk-mock）"
+
+  info "拉取 Metamod:Source（官方 checkout-deps.sh -s none，只取 mmsource，不取任何 HL2SDK）"
   # checkout-deps.sh 要求当前目录是源码树之外的同级目录（它会写入 sourcemod/ 作为占位）
   (
     cd "$DEPS_DIR"
     mkdir -p sourcemod
-    bash "$SM_TREE/tools/checkout-deps.sh" -s "$DEPS_SDKS"
+    bash "$SM_TREE/tools/checkout-deps.sh" -s none
   )
+
+  # SDK 目录：用 mock 满足 (b)。直接取 alliedmodders/hl2sdk-mock（浅克隆即可，
+  # 只会被当作 SDK 根目录使用，geoip 并不引用其中任何头文件）。
+  fetch_mock_sdk() {
+    if [ -d "$DEPS_DIR/hl2sdk-mock/.git" ] || [ -f "$DEPS_DIR/hl2sdk-mock/public/tier1/strtools.h" ]; then
+      echo "[sdk] hl2sdk-mock 已存在"
+      return 0
+    fi
+    rm -rf "$DEPS_DIR/hl2sdk-mock"
+    echo "[sdk] 克隆 hl2sdk-mock（mock SDK，约数 MB）"
+    git clone --depth 1 https://github.com/alliedmodders/hl2sdk-mock.git \
+      "$DEPS_DIR/hl2sdk-mock" || return 1
+    # 用 manifest include_paths 里的真实文件确认目录结构可用
+    [ -f "$DEPS_DIR/hl2sdk-mock/public/tier1/strtools.h" ] || return 1
+    return 0
+  }
+
+  if fetch_mock_sdk; then
+    echo "[sdk] mock SDK 就绪 -> $DEPS_DIR/hl2sdk-mock"
+  else
+    # 退化方案：mock 不可用时改用真实 SDK。1.11 及更早的旧 SDK 系统只认
+    # PossibleSDKs 里的真实名称，mock 不一定适用，这里用 tf2。
+    echo "[sdk] mock 不可用，回退到真实 SDK: tf2"
+    name=hl2sdk-tf2
+    if [ ! -d "$DEPS_DIR/$name" ]; then
+      git clone --depth 1 -b tf2 https://github.com/alliedmodders/hl2sdk.git "$DEPS_DIR/$name" \
+        || die "无法获取任何可用的 SDK（mock 与 tf2 均失败）"
+    fi
+  fi
 else
   info "按 --skip-deps 跳过依赖拉取"
 fi
@@ -265,7 +302,7 @@ if [ -d "$DEPS_DIR" ]; then
 fi
 
 info "configure"
-echo "[cmd] configure.py --enable-optimize --no-color --sdks=$SDK_ARG --no-mysql --targets=$TARGET_ARCH --mms-path=$MMS_PATH"
+echo "[cmd] configure.py --enable-optimize --no-color --sdks=$SDK_ARG --no-mysql --targets=$TARGET_ARCH --mms-path=$MMS_PATH --hl2sdk-root=$DEPS_DIR"
 (
   cd "$BUILD_DIR"
   "$PY" ../configure.py \
@@ -274,7 +311,8 @@ echo "[cmd] configure.py --enable-optimize --no-color --sdks=$SDK_ARG --no-mysql
     "--sdks=$SDK_ARG" \
     --no-mysql \
     --targets="$TARGET_ARCH" \
-    "--mms-path=$MMS_PATH"
+    "--mms-path=$MMS_PATH" \
+    "--hl2sdk-root=$DEPS_DIR"
 )
 
 # --- 5. 编译 -------------------------------------------------------------------
