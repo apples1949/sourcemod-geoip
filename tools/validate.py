@@ -474,6 +474,22 @@ if os.path.isfile(filter_py):
 else:
     bad("缺少 tools/filter-build-scripts.py")
 
+# 解释器选择必须按"能真正 import ambuild2"判断。
+# 不能用 command -v：Windows 上 PATH 里的 WindowsApps\python3 是 Microsoft Store
+# 存根（存在但不可用），而 venv 里通常没有 python3 -> 会选中存根并误报"缺少 AMBuild"。
+if re.search(r"command -v python3", sh):
+    bad("用 command -v python3 判断解释器：Windows 上会选中 Store 存根（存在但不可用）")
+else:
+    ok("未用 command -v python3 判断解释器")
+if "import ambuild2" in sh and "py_ok" in sh:
+    ok("按「能 import ambuild2」选择解释器")
+else:
+    bad("未按能否 import ambuild2 选择解释器（Windows 上会误判）")
+if "Scripts/python.exe" in sh and "ambuild-venv" in sh:
+    ok("能从 venv 常见位置（含 Windows 的 Scripts/）回退查找解释器")
+else:
+    bad("缺少 venv 回退查找：Windows 上 venv 无 python3 时会失败")
+
 # --- public/safetyhook 是 1.12 才有的 submodule，1.11 必须豁免 ---
 if '[ ! -d "$SM_TREE/$dir" ]' in sh or "! -d" in sh:
     ok("submodule 自检对分支缺失的目录有豁免（safetyhook 仅 1.12 存在）")

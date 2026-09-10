@@ -128,11 +128,29 @@ SUBMODULES
 SDK_ARG="present"
 echo "[sdk] --sdks=$SDK_ARG（仅构建 geoip，不需要真正的 HL2SDK）"
 
-if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
-command -v "$PY" >/dev/null 2>&1 || die "找不到 python3"
-"$PY" -c 'import ambuild2' 2>/dev/null \
-  || die "缺少 AMBuild: python3 -m pip install 'git+https://github.com/alliedmodders/ambuild.git'"
-command -v ambuild >/dev/null 2>&1 || die "找不到 ambuild 命令（AMBuild 未安装完整）"
+# 选 python 解释器：以"能真正 import ambuild2"为准。
+# 不能用 command -v 判断 —— Windows 上 PATH 里的 WindowsApps\python3 是 Microsoft Store
+# 存根（存在但不可用；若被执行还可能弹出应用商店），而 venv 里通常只有 python / python.exe
+# 没有 python3。只看 command -v 会选中存根，然后误报"缺少 AMBuild"。
+PY=""
+py_ok() { [ -n "$1" ] && "$1" -c 'import ambuild2' >/dev/null 2>&1; }
+
+# 先试 PATH 上的候选项（Linux 的 venv 会提供 python3，构建脚本本就期望它）
+for cand in python3 python py; do
+  if py_ok "$cand"; then PY="$cand"; break; fi
+done
+# 再试常见 venv 位置（Windows 上 python3 可能是 Store 存根，必须能落到这里）
+if [ -z "$PY" ]; then
+  for d in "${AMBUILD_VENV:-}" "$HOME/ambuild-venv" "$REPO_ROOT/.venv" "$REPO_ROOT/venv"; do
+    [ -n "$d" ] || continue
+    for e in "$d/bin/python" "$d/bin/python3" "$d/Scripts/python.exe" "$d/Scripts/python"; do
+      if py_ok "$e"; then PY="$e"; break 2; fi
+    done
+  done
+fi
+[ -n "$PY" ] || die "找不到装有 AMBuild 的 python 解释器：python3 -m pip install 'git+https://github.com/alliedmodders/ambuild.git'"
+command -v ambuild >/dev/null 2>&1 || die "PATH 上找不到 ambuild 命令（AMBuild 未安装完整，或 venv 未加入 PATH）"
+echo "[py] 使用解释器: $PY"
 
 # --- 0. 核验本仓库存在的目的：必须带上 SourceMod PR #2335 的中文语言码修复 ---------
 # 上游只在 master（1.13）有该修复（其后回移到 1.12-dev），1.11-dev 至今没有。
