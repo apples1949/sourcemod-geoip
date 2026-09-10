@@ -335,7 +335,16 @@ SDK 名去找 `hl2sdk-none`，直接报 `Missing hl2sdks: none`。
 - **必须提供 Metamod:Source 源码**：`AMBuildScript` 的 `detectSDKs()` 会无条件校验
   `mms_root`（core 的 SourceHook 头文件需要它），即使不构建任何 HL2SDK 也不例外。
   各分支需要的版本不同（1.11-dev → `mmsource-1.10`，1.12-dev → `mmsource-1.12`），
-  脚本因此不写死版本号，而是用官方 `tools/checkout-deps.sh` 拉取后按 glob 自动发现。
+  脚本从 `tools/checkout-deps.sh` 里解析出版本号，再按 `<版本>-dev` 分支**直接 clone**。
+
+  > **不能直接用 `checkout-deps.sh` 拉 Metamod。** SourceMod 1.11-dev 的该脚本里写的是
+  > `name=mmsource-1.10` 配 `branch=master` —— 它会 clone `metamod-source` 的 `master`
+  > （1.13 时代），而那个版本**已经没有 `core/sourcehook` 目录**了（重新组织过），
+  > 于是 core 编译时报 `fatal error: 'sh_vector.h' file not found`。
+  > 所以脚本改为按正确分支（`1.10-dev` / `1.12-dev`）显式 clone，并校验
+  > `core/sourcehook/{sourcehook,sh_vector,sh_string}.h` 三个文件都在。
+  > 顺带也避开了该脚本固定要下载的 ~300 MB MySQL 与整个 hl2sdk 镜像仓库。
+
 - **`public/safetyhook` 只有 1.12 有**：1.11-dev 既没有这个目录，也不在
   `AMBuildScript` 里引用它。自检因此对该目录单独豁免（存在才校验），
   否则 1.11 会被误判为"源码树结构不符"。

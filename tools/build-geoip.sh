@@ -227,22 +227,66 @@ echo "[only] 已裁剪 AMBuildScript：仅构建 geoip 扩展"
 # 结果 clone 失败、deps 里一个 SDK 都不剩，两个分支都因此失败过。
 if [ "$SKIP_DEPS" -eq 0 ]; then
   mkdir -p "$DEPS_DIR"
-  if [ ! -f "$SM_TREE/tools/checkout-deps.sh" ]; then
-    die "SourceMod 源码树缺少 tools/checkout-deps.sh，无法拉取依赖（可加 --skip-deps 自行准备）"
+  [ -f "$SM_TREE/tools/checkout-deps.sh" ] \
+    || die "SourceMod 源码树缺少 tools/checkout-deps.sh，无法判断所需依赖版本（可加 --skip-deps 自行准备）"
+
+  # Metamod:Source 的目录名与 git 分支**不总是一致**：
+  #   sourcemod 1.11-dev 的 checkout-deps.sh 里写的是 name=mmsource-1.10 / branch=master
+  #   -> 它会去 clone metamod-source 的 master，而 master（1.13 时代）已经没有
+  #      core/sourcehook 目录了（重新组织过），于是 core 编译时报
+  #      fatal error: 'sh_vector.h' file not found
+  # 因此不能依赖该脚本取 Metamod，必须按正确分支显式 clone 并校验 sourcehook 头文件。
+  MMS_DIR_NAME=""
+  for v in 1.12 1.11 1.10; do
+    if grep -q "mmsource-$v" "$SM_TREE/tools/checkout-deps.sh" 2>/dev/null; then
+      MMS_DIR_NAME="mmsource-$v"
+      break
+    fi
+  done
+  [ -n "$MMS_DIR_NAME" ] || die "无法从 tools/checkout-deps.sh 判断需要的 Metamod:Source 版本"
+  # mmsource-1.12 -> 分支 1.12-dev
+  MMS_BRANCH="${MMS_DIR_NAME#mmsource-}-dev"
+  MMS_PATH="$DEPS_DIR/$MMS_DIR_NAME"
+
+  mmsource_ok() {
+    [ -f "$1/core/sourcehook/sourcehook.h" ] && \
+    [ -f "$1/core/sourcehook/sh_vector.h" ] && \
+    [ -f "$1/core/sourcehook/sh_string.h" ]
+  }
+
+  if [ -d "$MMS_PATH/.git" ] && mmsource_ok "$MMS_PATH"; then
+    echo "[mms] Metamod:Source 已就绪 -> $MMS_PATH"
+  else
+    if [ -d "$MMS_PATH" ]; then
+      echo "[mms] $MMS_PATH 不完整（缺 core/sourcehook 头文件），重新克隆"
+      rm -rf "$MMS_PATH"
+    fi
+    info "克隆 Metamod:Source（分支 $MMS_BRANCH -> $MMS_DIR_NAME）"
+    # 1.10-dev 没有 submodule，1.12-dev 有（third_party/amtl、hl2sdk-manifests）。
+    # 先带 submodule 克隆；失败则清掉半成品再退回普通克隆（1.10-dev 无 submodule，
+    # 普通克隆即完整）。
+    clone_mms() {
+      if git clone --depth 1 --branch "$MMS_BRANCH" \
+           --recurse-submodules --shallow-submodules \
+           https://github.com/alliedmodders/metamod-source.git "$MMS_PATH"; then
+        return 0
+      fi
+      [ -e "$MMS_PATH" ] && rm -rf "$MMS_PATH"
+      git clone --depth 1 --branch "$MMS_BRANCH" \
+        https://github.com/alliedmodders/metamod-source.git "$MMS_PATH"
+    }
+    clone_mms || die "无法克隆 Metamod:Source 分支 $MMS_BRANCH"
+    mmsource_ok "$MMS_PATH" \
+      || die "Metamod:Source 副本缺少 core/sourcehook 头文件（分支 $MMS_BRANCH 是否正确？）"
+    echo "[mms] Metamod:Source 就绪 -> $MMS_PATH"
   fi
 
-  info "拉取 Metamod:Source（官方 checkout-deps.sh -s none，只取 mmsource，不取任何 HL2SDK）"
-  # checkout-deps.sh 要求当前目录是源码树之外的同级目录（它会写入 sourcemod/ 作为占位）
-  (
-    cd "$DEPS_DIR"
-    mkdir -p sourcemod
-    bash "$SM_TREE/tools/checkout-deps.sh" -s none
-  )
-
-  # SDK 目录：用 mock 满足 (b)。直接取 alliedmodders/hl2sdk-mock（浅克隆即可，
-  # 只会被当作 SDK 根目录使用，geoip 并不引用其中任何头文件）。
+  # SDK 目录：用 mock 满足"至少一个可构建 SDK"。直接取 alliedmodders/hl2sdk-mock
+  # （浅克隆即可，只会被当作 SDK 根目录使用，geoip 并不引用其中任何头文件）。
+  # 注意不能走 checkout-deps.sh 的 -s mock：它按普通 SDK 去 clone hl2sdk 的 mock 分支，
+  # 而该分支不存在（mock 在独立仓库 hl2sdk-mock），会失败且一个 SDK 都不剩。
   fetch_mock_sdk() {
-    if [ -d "$DEPS_DIR/hl2sdk-mock/.git" ] || [ -f "$DEPS_DIR/hl2sdk-mock/public/tier1/strtools.h" ]; then
+    if [ -f "$DEPS_DIR/hl2sdk-mock/public/tier1/strtools.h" ]; then
       echo "[sdk] hl2sdk-mock 已存在"
       return 0
     fi
@@ -258,8 +302,7 @@ if [ "$SKIP_DEPS" -eq 0 ]; then
   if fetch_mock_sdk; then
     echo "[sdk] mock SDK 就绪 -> $DEPS_DIR/hl2sdk-mock"
   else
-    # 退化方案：mock 不可用时改用真实 SDK。1.11 及更早的旧 SDK 系统只认
-    # PossibleSDKs 里的真实名称，mock 不一定适用，这里用 tf2。
+    # 退化方案：mock 不可用时改用真实 SDK。
     echo "[sdk] mock 不可用，回退到真实 SDK: tf2"
     name=hl2sdk-tf2
     if [ ! -d "$DEPS_DIR/$name" ]; then
@@ -272,19 +315,17 @@ else
 fi
 
 # --- 3. 定位 Metamod:Source ----------------------------------------------------
-# 各分支要求的 MetaMod 版本不同（1.11-dev 用 mmsource-1.10，1.12-dev 用 mmsource-1.12），
-# 因此不写死版本号，按 glob 自动发现。
-shopt -s nullglob
-mms_candidates=("$DEPS_DIR"/mmsource-*)
-shopt -u nullglob
-
-[ "${#mms_candidates[@]}" -gt 0 ] \
-  || die "在 $DEPS_DIR 找不到 mmsource-*（AMBuildScript 需要 Metamod:Source 源码）"
-[ "${#mms_candidates[@]}" -eq 1 ] \
-  || die "在 $DEPS_DIR 找到多个 mmsource-*，请清理只留一个: ${mms_candidates[*]}"
-MMS_PATH="$(cd "${mms_candidates[0]}" && pwd)"
+if [ "$SKIP_DEPS" -eq 1 ]; then
+  shopt -s nullglob
+  mms_candidates=("$DEPS_DIR"/mmsource-*)
+  shopt -u nullglob
+  [ "${#mms_candidates[@]}" -eq 1 ] \
+    || die "在 $DEPS_DIR 找不到唯一的 mmsource-*（--skip-deps 时需自行准备好）"
+  MMS_PATH="$(cd "${mms_candidates[0]}" && pwd)"
+fi
+MMS_PATH="$(cd "$MMS_PATH" && pwd)"
 [ -d "$MMS_PATH/core" ] || die "Metamod:Source 副本不完整（缺少 core/）: $MMS_PATH"
-echo "[ok] Metamod:Source -> $MMS_PATH"
+echo "[mms] 使用 -> $MMS_PATH"
 
 # --- 4. configure --------------------------------------------------------------
 # --sdks=none : GeoIP 不依赖任何 HL2SDK，也避免拉取数 GB 的 SDK 仓库

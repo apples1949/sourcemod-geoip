@@ -287,7 +287,7 @@ checks = [
     ("--no-mysql", "不构建 MySQL 扩展"),
     ("--targets=\"$TARGET_ARCH\"", "目标架构参数"),
     ("--mms-path=", "提供 Metamod:Source 路径（detectSDKs 强制要求）"),
-    ("checkout-deps.sh", "用官方脚本拉依赖"),
+    ("checkout-deps.sh", "从 checkout-deps.sh 解析所需依赖版本"),
     ("mmsource-*", "按 glob 自动发现 mmsource 版本"),
     ("extensions/geoip", "同步到源码树 extensions/geoip"),
     ("ambuild", "执行编译"),
@@ -331,6 +331,32 @@ if "--hl2sdk-root" in sh:
     ok("显式传 --hl2sdk-root，SDK 发现路径确定")
 else:
     bad("未传 --hl2sdk-root，manifest 系统可能找不到 mock SDK")
+
+# --- Metamod:Source：不能用 checkout-deps.sh 直接取 ---
+# sourcemod 1.11-dev 的 checkout-deps.sh 写的是 name=mmsource-1.10 / branch=master，
+# 会 clone metamod-source 的 master，而 master 已无 core/sourcehook，
+# 导致 core 编译报 'sh_vector.h' file not found。必须按正确分支显式 clone。
+if "metamod-source.git" in sh and "git clone" in sh:
+    ok("直接按分支 clone Metamod:Source（不依赖 checkout-deps.sh 的分支选择）")
+else:
+    bad("未直接 clone Metamod:Source —— checkout-deps.sh 在 1.11 会取错分支（master）")
+if "MMS_BRANCH" in sh and "-dev" in sh:
+    ok("从 mmsource-<版本> 推导出对应的 <版本>-dev 分支")
+else:
+    bad("未按 mmsource 目录名推导 Metamod 分支")
+if "core/sourcehook/sh_vector.h" in sh:
+    ok("校验 Metamod 副本含 core/sourcehook/sh_vector.h（1.11 core 编译必需）")
+else:
+    bad("未校验 core/sourcehook/sh_vector.h —— 取到错误分支时无法及时发现")
+if "core/sourcehook/sourcehook.h" in sh:
+    ok("校验 core/sourcehook/sourcehook.h")
+else:
+    bad("未校验 core/sourcehook/sourcehook.h")
+# checkout-deps.sh 只应被用来读取版本号，不应再用来拉取依赖
+if re.search(r"bash\s+\"?\$SM_TREE/tools/checkout-deps\.sh", sh):
+    bad("仍在执行 checkout-deps.sh 拉取依赖（会下载 300MB MySQL 与 hl2sdk 镜像，且可能取错分支）")
+else:
+    ok("未执行 checkout-deps.sh（仅解析版本号），避免取错分支与多余下载")
 
 # --- 只构建 geoip：整棵树全量构建会连带编译 regex 等扩展并因缺依赖失败 ---
 if "filter-build-scripts.py" in sh:
