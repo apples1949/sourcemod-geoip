@@ -61,6 +61,7 @@ else:
 
 for rel in [".github/workflows/build.yml", "tools/build-geoip.sh", "README.md",
             ".gitignore", ".gitattributes", "LICENSE",
+            "tools/filter-build-scripts.py",
             "patches/README.md", "patches/geoip_fix_2335.patch"]:
     if os.path.isfile(os.path.join(REPO, rel)):
         ok(rel)
@@ -299,30 +300,54 @@ for needle, why in checks:
     else:
         bad(f"脚本缺少 {why} ({needle})")
 
-# --- SDK 参数：两代构建系统写法不同，不能用固定值 ---
+# --- SDK 参数：两代构建系统的差异用同一套写法解决 ---
 # 1.11：--sdks=none 是关键字
 # 1.12：SDK 改为 manifest 驱动，none 会被当成 SDK 名去找 hl2sdk-none 而失败；
-#       正确做法是 --sdks=present 并提供一个 mock SDK（present 允许 SDK 缺失）
-if "hl2sdk-manifests/SdkHelpers.ambuild" in sh:
-    ok("按 manifest 系统存在与否选择 SDK 参数（1.11/1.12 差异已处理）")
-else:
-    bad("未检测 manifest 驱动的 SDK 系统 —— 1.12 上用 --sdks=none 会报 Missing hl2sdks: none")
-# 只针对 configure 命令行里的字面量写法（脚本里另有 1.11 分支赋值 SDK_ARG="none"，那是正确的）
-if re.search(r"^\s*--sdks=none\s*\\", sh, re.M):
-    bad("configure 里把 --sdks 写死为 none：1.12 会直接失败，应使用 $SDK_ARG")
+#       统一用 --sdks=present + mock（present 允许 SDK 缺失，mock 让 sdk_targets 非空）
+if re.search(r"^\s*--sdks=none\s*\\", sh, re.M) or '"--sdks=none"' in sh:
+    bad("configure 里把 --sdks 写死为 none：1.12 会报 Missing hl2sdks: none，应使用 $SDK_ARG")
 else:
     ok("configure 未写死 --sdks=none，改用变量 $SDK_ARG")
-for var, val in [('SDK_ARG="present"', "1.12 用 present（缺失 SDK 只警告不报错）"),
-                 ('DEPS_SDKS="mock"', "1.12 拉取 mock SDK（保证 sdk_targets 非空）"),
-                 ('SDK_ARG="none"', "1.11 用 none（该分支识别此关键字）")]:
+for var, val in [('SDK_ARG="present"', "SDK 用 present（缺失的 SDK 只警告不报错）"),
+                 ('DEPS_SDKS="mock"', "拉取 mock SDK（保证 sdk_targets 非空）")]:
     if var in sh:
-        ok(f"{val}")
+        ok(val)
     else:
         bad(f"缺少 {val}（期望出现 {var}）")
 if 'checkout-deps.sh" -s "$DEPS_SDKS"' in sh:
     ok("依赖脚本用 $DEPS_SDKS（与 configure 的 SDK 策略一致）")
 else:
     bad("checkout-deps.sh 未使用 $DEPS_SDKS，可能与 configure 的 SDK 策略不一致")
+
+# --- 只构建 geoip：整棵树全量构建会连带编译 regex 等扩展并因缺依赖失败 ---
+if "filter-build-scripts.py" in sh:
+    ok("调用 filter-build-scripts.py 裁剪构建列表")
+else:
+    bad("未裁剪构建列表：会全量编译源码树的所有扩展（regex 等会因缺依赖而失败）")
+if "--keep geoip" in sh:
+    ok("裁剪时保留 geoip 扩展")
+else:
+    bad("裁剪未指定 --keep geoip")
+if "restore_amb" in sh and "trap 'restore_amb' EXIT" in sh:
+    ok("构建后（含失败/中断）还原 AMBuildScript（trap EXIT）")
+else:
+    bad("未在 EXIT trap 里还原 AMBuildScript，会污染源码树")
+
+filter_py = os.path.join(REPO, "tools", "filter-build-scripts.py")
+if os.path.isfile(filter_py):
+    fp_src = open(filter_py, "r", encoding="utf-8").read()
+    if "extensions/" in fp_src and "AMBuilder" in fp_src:
+        ok("filter-build-scripts.py 定位 extensions/*/AMBuilder 行")
+    else:
+        bad("filter-build-scripts.py 未匹配 extensions/*/AMBuilder")
+    for guard, why in [("extensions/*/AMBuilder 行，结构可能已变", "找不到目标行时报错"),
+                       ("找不到 keep 指定的扩展", "保留的扩展缺失时报错")]:
+        if guard in fp_src:
+            ok(f"filter 脚本具备保护：{why}")
+        else:
+            bad(f"filter 脚本缺少保护：{why}")
+else:
+    bad("缺少 tools/filter-build-scripts.py")
 
 # --- public/safetyhook 是 1.12 才有的 submodule，1.11 必须豁免 ---
 if '[ ! -d "$SM_TREE/$dir" ]' in sh or "! -d" in sh:

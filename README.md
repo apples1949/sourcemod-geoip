@@ -135,6 +135,7 @@ public void OnClientPostAdminCheck(int client)
 │   └── geoip_fix_2335.patch      # 中文语言码修复补丁（构建时核验/回填）
 ├── tools/
 │   ├── build-geoip.sh            # 构建脚本（CI 与本地共用）
+│   ├── filter-build-scripts.py   # 裁剪 AMBuildScript：只构建 geoip 扩展
 │   ├── sync-upstream.py          # 同步上游源码（带 git blob SHA 校验）
 │   └── validate.py               # 仓库自检
 ├── .gitattributes
@@ -257,37 +258,52 @@ sudo apt-get install -y clang-14 build-essential gcc-multilib g++-multilib \
 > 但在本仓库的 runner 上下文里该镜像拿不到 `clang++`（容器内 PATH 找不到编译器，
 > 报 `clang++: command not found`）。改为显式安装后不再依赖任何第三方镜像。
 
+### 只构建 geoip（`tools/filter-build-scripts.py`）
+
+根 `AMBuildScript` 的 `BuildScripts` 会编译**整棵源码树的所有扩展**。这些扩展各有各的
+依赖，与 geoip 完全无关却会让构建失败 —— 实测 1.11 就死在：
+
+```
+extensions/regex/extension.cpp:34:10: fatal error: 'sh_string.h' file not found
+```
+
+因此编译前会把 `AMBuildScript` 里除 geoip 外的扩展移出构建列表（只改构建脚本，
+不动源码；`loader` / `core` / `core/logic` / `versionlib` / `plugins` 全部保留）：
+
+```
+[only] 已裁剪 AMBuildScript：仅构建 geoip 扩展
+```
+
+这一步是安全的，因为 geoip 的 `AMBuilder` 只引用自身源码、`../../public/smsdk_ext.cpp`
+和 `public/` 头文件，**不依赖任何其它扩展**。脚本用 `trap ... EXIT` 保证构建结束
+（含失败或中断）后把 `AMBuildScript` 还原，不在源码树里留痕。
+
 ### 编译参数
 
 ```bash
 python3 ../configure.py \
   --enable-optimize \          # -O3 / NDEBUG
   --no-color \
-  --sdks=<见下> \               # 两代构建系统写法不同
+  --sdks=present \             # 见下：两代构建系统的差异用同一套写法解决
   --no-mysql \                 # 不构建 MySQL 扩展，免去 MySQL 5.5 头文件依赖
   --targets=x86 \              # 服务端为 32 位
   --mms-path=<deps>/mmsource-1.12
 ambuild
 ```
 
-**SDK 参数必须按分支区分**，这是踩过的坑：
+**SDK 参数是踩坑点**：老写法 `--sdks=none` 在 1.12 上不再有效 —— 1.12 把 SDK 改成
+manifest 驱动（`hl2sdk-manifests/SdkHelpers.ambuild`），`none` 不再是关键字，会被当成
+SDK 名去找 `hl2sdk-none`，直接报 `Missing hl2sdks: none`。
 
-| 分支 | 取值 | 原因 |
-| --- | --- | --- |
-| 1.11-dev | `none` | 该分支 `detectSDKs()` 把 `none` 当关键字，直接跳过所有 SDK |
-| 1.12-dev | `present` + 拉 mock SDK | 1.12 改成 manifest 驱动（`hl2sdk-manifests/SdkHelpers.ambuild`），**`none` 不再是关键字**，会被当作 SDK 名去找 `hl2sdk-none`，报 `Missing hl2sdks: none` |
+现在统一用 `--sdks=present` + mock SDK，两代都成立：
 
-1.12 为什么用 `present` 而不是 `mock` 之类：
-
-- `present` 的语义是"有什么用什么"，缺失的 SDK 只打印警告。其它取值会走
-  `shouldRequireSdk()` → 缺失即 `raise`（`--sdks=none` 失败就是这个机制）。
-- 需要**至少一个**能构建的 SDK，否则会触发
-  `No buildable SDKs were found, nothing to build.`。`manifests/mock.json` 声明了
-  `"source2": false`，能通过 `shouldIncludeSdk` 过滤，于是 mock 被计入 `sdk_targets`。
-- mock SDK 只是让 SDK 解析满足前置条件；`geoip` 本身**不引用任何 SDK 头文件**，
-  也没有任何扩展会因为 mock 而多编译出东西。
-
-脚本按 `hl2sdk-manifests/SdkHelpers.ambuild` 是否存在自动选择，无需手工干预。
+- `present` 的语义是「有什么用什么」，缺失的 SDK 只打印警告。其它取值会走
+  `shouldRequireSdk()` → 缺失即 `raise`（`none` 失败就是这个机制）。
+- 需要至少一个可构建的 SDK，否则 1.12 报 `No buildable SDKs were found`；
+  `manifests/mock.json` 声明 `"source2": false`，能通过 `shouldIncludeSdk` 过滤，
+  使 mock 计入 `sdk_targets`。
+- mock 只用于满足 SDK 解析的前置条件：**geoip 不引用任何 SDK 头文件**，
+  且其它扩展已被移出构建列表，所以它不会让任何东西被多编译出来。
 
 ### PR #2335 修复的核验（`tools/build-geoip.sh` 第 0 步）
 

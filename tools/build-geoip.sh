@@ -111,27 +111,22 @@ public/safetyhook:include/safetyhook.hpp:SafetyHook（public/safetyhook）
 SUBMODULES
 )
 
-# 3) SDK 目标：GeoIP 不依赖任何 HL2SDK，但两代构建系统对"不构建 SDK"的写法不同
-#    1.11：--sdks=none 是关键字，直接跳过所有 SDK，且 len(sdks)<1 时不报错
+# 3) SDK 目标：geoip 不依赖任何 HL2SDK，但"不构建 SDK"的写法两代不同
+#    1.11：--sdks=none 是关键字，跳过所有 SDK
 #    1.12：SDK 改为 manifest 驱动（根 AMBuildScript 用 builder.Eval 加载
 #          hl2sdk-manifests/SdkHelpers.ambuild），"none" 不再是关键字，
 #          会被当成 SDK 名去找 hl2sdk-none，报 "Missing hl2sdks: none"
-#
-#    1.12 的解法是 --sdks=present + 提供一个 mock SDK：
-#      - present 语义是"有什么用什么"：缺失的 SDK 只警告，不报错
-#        （非 present 时会进 shouldRequireSdk -> 缺失即 raise，这正是 none 失败的原因）
-#      - manifests/mock.json 声明 "source2": false，能通过 shouldIncludeSdk 过滤，
-#        于是 mock 被找到并计入 sdk_targets，避免 "No buildable SDKs were found"
-#      - 有 mock 在场后，SDK 相关扩展按 mock 的平台/架构正常跳过，GeoIP 照常构建
-if [ -f "$SM_TREE/hl2sdk-manifests/SdkHelpers.ambuild" ]; then
-  SDK_ARG="present"
-  DEPS_SDKS="mock"
-  echo "[sdk] 检测到 manifest 驱动的 SDK 系统（1.12+）：--sdks=present + mock SDK"
-else
-  SDK_ARG="none"
-  DEPS_SDKS="none"
-  echo "[sdk] 检测到旧的 SDK 系统（<=1.11）：--sdks=none"
-fi
+#    统一采用 --sdks=present + mock SDK（自 1.11 起两代都可用，无需分支）：
+#      - present 语义是"有什么用什么"：缺失的 SDK 只警告不报错
+#        （非 present 时会走 shouldRequireSdk -> 缺失即 raise，这正是 none 失败的机制）
+#      - 需要至少一个可构建的 SDK，否则 1.12 报 No buildable SDKs were found；
+#        1.11 的 mock 已被 use_present 直接纳入。1.12 的 manifests/mock.json 声明
+#        "source2": false，能通过 shouldIncludeSdk 过滤，使 mock 计入 sdk_targets
+#      - mock 只是让 SDK 解析满足前置条件；geoip 不引用任何 SDK 头文件。
+#        （即便 mock 缺失，1.12 下 present 也只警告并继续）
+SDK_ARG="present"
+DEPS_SDKS="mock"
+echo "[sdk] --sdks=$SDK_ARG（仅构建 geoip，不需要真正的 HL2SDK；mock 用于满足 SDK 解析前置条件）"
 
 if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
 command -v "$PY" >/dev/null 2>&1 || die "找不到 python3"
@@ -196,6 +191,29 @@ mkdir -p "$SM_TREE/extensions"
 rm -rf "$SM_TREE/extensions/geoip"
 cp -a "$SRC_DIR" "$SM_TREE/extensions/geoip"
 echo "[ok] 已同步扩展源码 -> $SM_TREE/extensions/geoip"
+
+# --- 1b. 只构建 geoip：把 AMBuildScript 里其它扩展移出构建列表 ------------------
+# 根 AMBuildScript 的 BuildScripts 会编译**整棵源码树**的所有扩展，那些扩展各有各的
+# 依赖（regex 需要 SourceHook 的 sh_string.h、部分需要 HL2SDK 等），与 geoip 无关却会
+# 让构建失败。geoip 的 AMBuilder 只引用自身源码、../../public/smsdk_ext.cpp 和 public/
+# 头文件，不依赖任何其它扩展，因此把非 geoip 的扩展从列表中剔除。
+# 只改 AMBuildScript（非源码），且构建结束/中断都会还原。
+AMB_FILE="$SM_TREE/AMBuildScript"
+AMB_BAK="$AMB_FILE.geoip-bak"
+[ -f "$AMB_FILE" ] || die "缺少 $SM_TREE/AMBuildScript"
+cp -f "$AMB_FILE" "$AMB_BAK"
+restore_amb() {
+  if [ -f "$AMB_BAK" ]; then
+    cp -f "$AMB_BAK" "$AMB_FILE"
+    rm -f "$AMB_BAK"
+  fi
+}
+trap 'restore_amb' EXIT
+
+if ! "$PY" "$REPO_ROOT/tools/filter-build-scripts.py" "$AMB_FILE" --keep geoip; then
+  die "裁剪构建列表失败，已中止（不会产出只含 geoip 的构建）"
+fi
+echo "[only] 已裁剪 AMBuildScript：仅构建 geoip 扩展"
 
 # --- 2. 依赖：Metamod:Source（+ mock SDK）--------------------------------------
 # 注意: SourceMod 的 AMBuildScript 在 detectSDKs() 里无条件要求一个 Metamod:Source 源码副本
@@ -266,7 +284,10 @@ info "ambuild"
   ambuild
 )
 
-# --- 6. 收集产物 ---------------------------------------------------------------
+# --- 6. 收集产物（先把源码树恢复原状）-----------------------------------------
+restore_amb
+echo "[only] 已还原 $AMB_FILE"
+
 mapfile -t built < <(find "$BUILD_DIR/package" -type f -name 'geoip.ext.so' | sort)
 [ "${#built[@]}" -gt 0 ] || die "构建结束但没找到 geoip.ext.so（构建是否失败或被跳过？）"
 
