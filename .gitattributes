@@ -12,6 +12,9 @@
 *.h             text eol=lf
 AMBuilder       text eol=lf
 
+# 补丁文件必须保持 LF：CRLF 会让 patch(1) 匹配失败
+*.patch         text eol=lf
+
 # 注意：不要在这里加 `*.rc text eol=crlf` 之类的通配规则。
 # 通配规则会让 git 认为 .rc 是文本并在入库时把 CRLF 规范化成 LF，
 # 使 content 与上游 blob 不一致（即使后面写了 -text 也可能被通配规则干扰）。

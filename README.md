@@ -1,8 +1,7 @@
-# SourceMod GeoIP Extension
+# SourceMod GeoIP Extension（含 PR #2335 中文修复，面向 1.11 / 1.12）
 
-[SourceMod](https://github.com/alliedmodders/sourcemod) 的 **GeoIP 扩展**独立构建仓库。
-源码取自上游 `alliedmodders/sourcemod` 的 `extensions/geoip/`，通过 GitHub Actions
-分别为 **SourceMod 1.11** 和 **1.12** 编译出 `geoip.ext.so`。
+为 **SourceMod 1.11 / 1.12** 平台，编译出**包含 [PR #2335](https://github.com/alliedmodders/sourcemod/pull/2335) 中文语言码修复**的
+GeoIP 扩展 `geoip.ext.so`。
 
 [![Build GeoIP Extension](https://github.com/OWNER/REPO/actions/workflows/build.yml/badge.svg)](https://github.com/OWNER/REPO/actions/workflows/build.yml)
 
@@ -10,38 +9,55 @@
 
 ---
 
-## 这是什么
+## 为什么需要这个仓库
 
-GeoIP 扩展为 SourceMod 提供按 IP 查询地理位置的能力（国家 / 洲 / 城市 / 经纬度 / 距离等），
-脚本层通过 `geoip.inc` 的 native 调用，例如：
+### 起因：GeoIP 拿不到中文翻译
 
-```sourcepawn
-#include <geoip>
+`GeoLite2-City.mmdb` 里的国家 / 城市名称，中文用的是语言码 `zh-CN`。
+但 SourceMod 的 translator 在中文环境下返回的是 `chi`，两者对不上，
+于是在 `mmdb.metadata.languages` 里找不到对应语言 —— **中文译名永远返回不了**，
+`GeoipCity()` / `GeoipCountryName()` 之类只能退回英文。
 
-public void OnClientPostAdminCheck(int client)
-{
-    char ip[32];
-    GetClientIP(client, ip, sizeof(ip));
+### 修复：PR #2335
 
-    char country[46];
-    GeoipCountryCode(ip, country, sizeof(country));
-    PrintToServer("客户端 %N 来自 %s", client, country);
-}
-```
+[alliedmodders/sourcemod#2335](https://github.com/alliedmodders/sourcemod/pull/2335)
+（*fix geoip chi and zho not return chinese translation*，merge commit `5c1a5e35`）
+在 `getLang()` 里把 `chi` 归一化成 `zh-CN`，问题即解。
 
-该扩展内嵌了 [libmaxminddb](https://github.com/maxmind/libmaxminddb) 的 C 源码
-（`maxminddb.c` 等），因此 **没有外部库依赖**，编译产物是一个自包含的 `.so`。
+### 问题：这个修复只在 1.13 上
+
+| 分支 | 是否含 PR #2335 |
+| --- | --- |
+| `master`（1.13） | ✅ 已合并 |
+| `1.12-dev` | ✅ 已回移 |
+| **`1.11-dev`** | ❌ **至今没有** |
+
+也就是说，官方发布的 1.11 版 GeoIP 依然拿不到中文译名。
+
+### 本仓库的做法
+
+在 1.11 / 1.12 平台上编译出**带该修复**的 GeoIP：
+
+- 扩展源码取自含修复的 `1.12-dev`，因此天然包含此修复；
+- 工作流按矩阵分别对 `1.11-dev` / `1.12-dev` 的源码树编译，
+  得到两个平台各自的二进制 —— 1.11 那份同样带着修复；
+- 构建前用 `patches/geoip_fix_2335.patch` **显式核验**修复存在：
+  万一将来源码被换回 `1.11-dev` 的无修复版本，会自动打上补丁；
+  补丁也打不上就**直接中止构建**，绝不静默产出没有中文支持的二进制。
+
+修复的细节与补丁维护方式见 [`patches/README.md`](patches/README.md)。
 
 ## 产物与安装
 
 每次 Actions 会产出两个 zip 压缩包：
 
-| 产物 | 适用 SourceMod |
-| --- | --- |
-| `geoip-ext-1.11-dev.zip` | SourceMod 1.11（对 1.11-dev 源码树编译） |
-| `geoip-ext-1.12-dev.zip` | SourceMod 1.12（对 1.12-dev 源码树编译） |
+| 产物 | 适用 SourceMod | 含 PR #2335 |
+| --- | --- | --- |
+| `geoip-ext-1.11-dev.zip` | SourceMod 1.11（对 1.11-dev 源码树编译） | ✅ |
+| `geoip-ext-1.12-dev.zip` | SourceMod 1.12（对 1.12-dev 源码树编译） | ✅ |
 
 > 两个平台的二进制**分别构建**，不要混用：请根据服务端的 SourceMod 版本下载对应压缩包。
+> 两者都包含中文语言码修复，区别只在于链接的 SourceMod 头文件 / 版本库不同。
 
 安装步骤：
 
@@ -68,6 +84,41 @@ public void OnClientPostAdminCheck(int client)
 
 扩展启动时会检查数据库文件：若数据库缺失或过期超过 90 天，会在 SourceMod 日志中给出提示。
 
+### 怎么确认中文修复生效
+
+服务端语言设为中文（`sm_language` / `sm_lang`，或用 `chi` 语言包），然后：
+
+```sourcepawn
+char ip[32], city[128];
+GetClientIP(client, ip, sizeof(ip));
+GeoipCity(ip, city, sizeof(city));      // 数据库支持 zh-CN 时会返回中文城市名
+PrintToServer("%s", city);
+```
+
+如果拿到中文（而不是 `en` 回退值），说明修复已生效。
+
+## 背景：这个扩展本身
+
+GeoIP 扩展为 SourceMod 提供按 IP 查询地理位置的能力（国家 / 洲 / 城市 / 经纬度 / 距离等），
+脚本层通过 `geoip.inc` 的 native 调用，例如：
+
+```sourcepawn
+#include <geoip>
+
+public void OnClientPostAdminCheck(int client)
+{
+    char ip[32];
+    GetClientIP(client, ip, sizeof(ip));
+
+    char country[46];
+    GeoipCountryCode(ip, country, sizeof(country));
+    PrintToServer("客户端 %N 来自 %s", client, country);
+}
+```
+
+该扩展内嵌了 [libmaxminddb](https://github.com/maxmind/libmaxminddb) 的 C 源码
+（`maxminddb.c` 等），因此 **没有外部库依赖**，编译产物是一个自包含的 `.so`。
+
 ## 仓库结构
 
 ```
@@ -76,9 +127,12 @@ public void OnClientPostAdminCheck(int client)
 ├── extensions/geoip/             # 扩展源码，目录位置与上游保持一致
 │   ├── AMBuilder                 #   AMBuild 构建描述
 │   ├── extension.cpp/.h          #   扩展主体（注册 native）
-│   ├── geoip_util.cpp/.h         #   native 实现
+│   ├── geoip_util.cpp/.h         #   native 实现（PR #2335 修复就在 geoip_util.cpp）
 │   ├── maxminddb.c/.h            #   内嵌 libmaxminddb
 │   └── ...
+├── patches/
+│   ├── README.md                 # PR #2335 修复说明与维护方式
+│   └── geoip_fix_2335.patch      # 中文语言码修复补丁（构建时核验/回填）
 ├── tools/
 │   ├── build-geoip.sh            # 构建脚本（CI 与本地共用）
 │   ├── sync-upstream.py          # 同步上游源码（带 git blob SHA 校验）
@@ -151,16 +205,20 @@ $ git hash-object extensions/geoip/maxminddb.c
 ## 为什么一份源码能同时支持 1.11 和 1.12
 
 仓库内的扩展源码与 `1.12-dev` 分支逐字节一致。经 git blob SHA-1 比对，
-`1.11-dev` 与 `1.12-dev` 的 `extensions/geoip/` 差异极小：
+`1.11-dev` 与 `1.12-dev` 的 `extensions/geoip/` 差异极小 —— **全仓库只差这一处，
+而且正是本仓库要补的那一处**：
 
 | 文件 | 1.11-dev vs 1.12-dev |
 | --- | --- |
 | `AMBuilder`、`extension.cpp/.h`、`geoip_util.h`、`maxminddb*`、`data-pool.*`、`osdefs.h`、`smsdk_config.h`、`version.rc` | **字节完全相同（13/14）** |
-| `geoip_util.cpp` | 仅一处差异：1.12 增加了把 `chi` 映射为 `zh-CN` 的语言码修正 |
+| `geoip_util.cpp` | **就是 PR #2335 的 `chi` → `zh-CN` 修复**（1.12 有，1.11 没有） |
 
-该差异只用 `strcmp` 与 `std::string`，不涉及任何版本相关的 API，因此在 1.11 上同样可编译可用
-（等于把 1.12 的中文语言码修正一并带给 1.11）。两个平台版本分别链接各自分支的
-`public/` 头文件与 versionlib，所以产物互不混用。
+这一点很关键：两分支的扩展源码本来就几乎一样，唯一的差别恰好是中文修复，
+而该修复只用 `strcmp` 与 `std::string`，**不涉及任何版本相关的 API**，
+所以在 1.11 上编译运行毫无障碍。于是做法就很直接：拿带修复的源码，
+分别对两棵源码树编译，1.11 那份也就带上了修复。
+
+两个平台版本分别链接各自分支的 `public/` 头文件与 versionlib，所以产物互不混用。
 
 ## 编译细节
 
@@ -179,7 +237,25 @@ python3 ../configure.py \
 ambuild
 ```
 
-其中两点来自 SourceMod 构建系统的硬性要求：
+### PR #2335 修复的核验（`tools/build-geoip.sh` 第 0 步）
+
+编译开始前会强制核验中文修复是否在源码里，避免"来源码一换、修复静默丢失"：
+
+```
+[patch] 源码缺少 PR #2335 修复，应用 patches/geoip_fix_2335.patch
+[patch] 补丁应用成功（源码此前是 1.11-dev 的无修复版本）
+```
+
+正常情况（源码取自 1.12-dev）输出的是：
+
+```
+[ok] PR #2335 中文语言码修复已存在于源码（strcmp(code, "chi")）
+```
+
+判定方式是查找标记 `strcmp(code, "chi")`；找不到才打补丁，打完再复查一次；
+补丁失败或复查仍缺失就**中止构建**。详细说明见 [`patches/README.md`](patches/README.md)。
+
+### 其他两点硬性要求
 
 - **必须提供 Metamod:Source 源码**：`AMBuildScript` 的 `detectSDKs()` 会无条件校验
   `mms_root`（core 的 SourceHook 头文件需要它），即使用 `--sdks=none` 也不例外。
@@ -206,6 +282,24 @@ git diff --stat
 > 且文件大小与 GitHub API 报告的 blob 大小不一致，直接编译会出现难以定位的问题。
 > `sync-upstream.py` 通过 `contents` API 声明的 blob sha 核对，能确保内容确实来自目标分支。
 
+### 同步时请留住 PR #2335 修复
+
+务必**从 `1.12-dev` 同步**（它含修复）：
+
+```bash
+python3 tools/sync-upstream.py --branch 1.12-dev
+grep -n 'zh-CN' extensions/geoip/geoip_util.cpp   # 应能查到
+```
+
+如果哪天确实要从 `1.11-dev` 同步（该分支**不含**修复），同步后源码里的中文修复会消失。
+这时不必手动改代码 —— 构建脚本会自动应用 `patches/geoip_fix_2335.patch` 并打印
+`[patch]` 提示。也可以先本地确认：
+
+```bash
+grep -c 'strcmp(code, "chi")' extensions/geoip/geoip_util.cpp   # 期望 1；为 0 则构建时会被打补丁
+python3 tools/validate.py                                       # 自检会一并核验该修复
+```
+
 ## 仓库自检
 
 ```bash
@@ -213,6 +307,7 @@ python3 tools/validate.py
 ```
 
 检查内容包括：文件清单完整性、`AMBuilder` 是否与上游字节一致（决定能否在源码树中编译）、
+**PR #2335 中文修复是否在源码中（`patches/` 完整性）**、
 工作流 YAML 结构（矩阵是否覆盖 1.11/1.12、是否拉取 submodule）、构建脚本关键参数，
 以及 `bash -n` 语法检查与文本文件编码/行尾规范。
 

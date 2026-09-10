@@ -60,11 +60,76 @@ else:
         wrn(f"extensions/geoip 存在未预期文件: {sorted(extra)}")
 
 for rel in [".github/workflows/build.yml", "tools/build-geoip.sh", "README.md",
-            ".gitignore", ".gitattributes", "LICENSE"]:
+            ".gitignore", ".gitattributes", "LICENSE",
+            "patches/README.md", "patches/geoip_fix_2335.patch"]:
     if os.path.isfile(os.path.join(REPO, rel)):
         ok(rel)
     else:
         bad(f"缺少 {rel}")
+
+print()
+print("=" * 68)
+print("1b. 本仓库的立身之本：PR #2335 中文语言码修复")
+print("=" * 68)
+# GeoIP 在中文环境下拿不到中文译名（translator 给 chi，mmdb 要 zh-CN）。
+# 上游只在 master(1.13) / 1.12-dev 修了，1.11-dev 没有；本仓库就是为了
+# 让 1.11 也能用上带修复的版本，所以这条必须始终成立。
+LANG_FIX_MARK = 'strcmp(code, "chi")'
+util_path = os.path.join(geoip_dir, "geoip_util.cpp")
+util = open(util_path, "rb").read().decode("utf-8", "replace") \
+    if os.path.isfile(util_path) else ""
+if not util:
+    bad("缺少 extensions/geoip/geoip_util.cpp，无法核验中文修复")
+else:
+    if LANG_FIX_MARK in util:
+        ok(f"源码已含 PR #2335 修复标记（{LANG_FIX_MARK}）")
+    else:
+        bad(f"源码缺少 PR #2335 修复标记（{LANG_FIX_MARK}）——"
+            f"1.11 平台将拿不到中文译名（构建脚本会尝试打补丁，但建议直接从 1.12-dev 同步）")
+    if 'code = "zh-CN";' in util:
+        ok('源码含 code = "zh-CN" 归一化赋值')
+    else:
+        bad('源码缺少 code = "zh-CN" 归一化赋值')
+
+sh_path_early = os.path.join(REPO, "tools", "build-geoip.sh")
+if os.path.isfile(sh_path_early):
+    build_sh = open(sh_path_early, "r", encoding="utf-8").read()
+    for needle, why in [
+        ("geoip_fix_2335.patch", "构建脚本引用 PR #2335 补丁"),
+        ("LANG_FIX_MARK", "构建脚本做修复标记查找"),
+        ("apply_lang_fix", "构建脚本带补丁应用逻辑"),
+    ]:
+        if needle in build_sh:
+            ok(why)
+        else:
+            bad(f"构建脚本缺少{why}（{needle}）")
+
+patch_path = os.path.join(REPO, "patches", "geoip_fix_2335.patch")
+if os.path.isfile(patch_path):
+    praw = open(patch_path, "rb").read()
+    ptxt = praw.decode("utf-8", "replace")
+    if ptxt.startswith("--- "):
+        ok("补丁文件以 --- 开头（标准 unified diff，可被 patch(1) 直接读取）")
+    else:
+        bad("补丁文件开头不是 --- ，patch(1) 可能无法解析")
+    if ptxt.count("@@") == 0:
+        bad("补丁文件不含 hunk（@@）")
+    else:
+        ok(f"补丁含 {ptxt.count('@@') // 2} 个 hunk 段")
+    if LANG_FIX_MARK in ptxt:
+        ok("补丁内容包含 chi 归一化修复")
+    else:
+        bad("补丁内容不含 chi 归一化修复")
+    if not praw.endswith(b"\n"):
+        wrn("补丁文件末尾缺少换行，部分 patch(1) 实现可能告警")
+    else:
+        ok("补丁文件以换行结尾（标准 unified diff 格式）")
+    if b"\r\n" in praw:
+        bad("补丁文件含 CRLF 行尾，patch(1) 可能匹配失败（应为 LF）")
+    else:
+        ok("补丁文件为 LF 行尾")
+    if ptxt.lstrip().startswith("#"):
+        bad("补丁文件含前导注释行，patch(1) 无法解析（说明性内容请写进 patches/README.md）")
 
 print()
 print("=" * 68)

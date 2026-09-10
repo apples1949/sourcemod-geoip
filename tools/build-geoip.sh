@@ -87,6 +87,51 @@ command -v "$PY" >/dev/null 2>&1 || die "找不到 python3"
   || die "缺少 AMBuild: python3 -m pip install 'git+https://github.com/alliedmodders/ambuild.git'"
 command -v ambuild >/dev/null 2>&1 || die "找不到 ambuild 命令（AMBuild 未安装完整）"
 
+# --- 0. 核验本仓库存在的目的：必须带上 SourceMod PR #2335 的中文语言码修复 ---------
+# 上游只在 master（1.13）有该修复（其后回移到 1.12-dev），1.11-dev 至今没有。
+# 本仓库源码取自 1.12-dev，天然包含；这里做一次显式核验，避免将来源码回退成
+# 1.11-dev 版本时"静默地少掉中文修复"。
+PATCH_FILE="$REPO_ROOT/patches/geoip_fix_2335.patch"
+LANG_FIX_MARK='strcmp(code, "chi")'
+
+apply_lang_fix() {
+  # 在独立临时目录里打补丁（patch -p1 可去掉 a/ b/ 前缀），避免 git apply
+  # 在"源码树位于仓库之外"时的仓库上下文限制。
+  local tmp rc
+  tmp="$(mktemp -d)"
+  mkdir -p "$tmp/extensions/geoip"
+  cp -a "$SRC_DIR/geoip_util.cpp" "$tmp/extensions/geoip/geoip_util.cpp"
+  if command -v patch >/dev/null 2>&1; then
+    ( cd "$tmp" && patch -p1 --batch --forward --silent < "$PATCH_FILE" )
+    rc=$?
+  elif command -v git >/dev/null 2>&1; then
+    ( cd "$tmp" && git apply -p1 "$PATCH_FILE" )
+    rc=$?
+  else
+    rm -rf "$tmp"
+    die "缺少 patch/git 工具，无法应用 PR #2335 补丁"
+  fi
+  if [ "$rc" -ne 0 ]; then
+    rm -rf "$tmp"
+    return 1
+  fi
+  cp -a "$tmp/extensions/geoip/geoip_util.cpp" "$SRC_DIR/geoip_util.cpp"
+  rm -rf "$tmp"
+  return 0
+}
+
+if [ ! -f "$PATCH_FILE" ]; then
+  echo "[patch] 警告: 未找到 $PATCH_FILE，跳过核验（产物将不含 PR #2335 中文修复）"
+elif grep -qF "$LANG_FIX_MARK" "$SRC_DIR/geoip_util.cpp"; then
+  echo "[ok] PR #2335 中文语言码修复已存在于源码（$LANG_FIX_MARK）"
+else
+  echo "[patch] 源码缺少 PR #2335 修复，应用 patches/geoip_fix_2335.patch"
+  apply_lang_fix || die "应用 PR #2335 补丁失败：请检查 extensions/geoip/geoip_util.cpp 是否与上游发生冲突性改动"
+  grep -qF "$LANG_FIX_MARK" "$SRC_DIR/geoip_util.cpp" \
+    || die "补丁已执行但未检测到修复标记，产物会缺少中文支持，已中止"
+  echo "[patch] 补丁应用成功（源码此前是 1.11-dev 的无修复版本）"
+fi
+
 info "SourceMod 源码树 : $SM_TREE"
 info "扩展源码         : $SRC_DIR"
 info "依赖目录         : $DEPS_DIR"
