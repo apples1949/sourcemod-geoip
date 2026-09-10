@@ -291,6 +291,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # 需要 unzip/zip；ubuntu runner 自带，缺了则补装
+          if ! command -v unzip >/dev/null 2>&1 || ! command -v zip >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq unzip zip
+          fi
+
           mkdir -p release
 
           for sm in 1.11-dev 1.12-dev; do
