@@ -1,0 +1,35 @@
+# 通用规则（注意：同一文件中后面的规则优先，具体文件的例外必须放在最后）
+* text=auto eol=lf
+
+*.sh            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.md            text eol=lf
+*.py            text eol=lf
+*.ps1           text eol=lf
+*.c             text eol=lf
+*.cpp           text eol=lf
+*.h             text eol=lf
+AMBuilder       text eol=lf
+
+# 注意：不要在这里加 `*.rc text eol=crlf` 之类的通配规则。
+# 通配规则会让 git 认为 .rc 是文本并在入库时把 CRLF 规范化成 LF，
+# 使 content 与上游 blob 不一致（即使后面写了 -text 也可能被通配规则干扰）。
+# 本项目唯一的 .rc 文件由下面的例外规则精确控制。
+
+# 以下 4 个文件在上游 SourceMod 仓库中是以 CRLF 存入 git 的。
+# 用 -text 关闭行尾转换，使仓库内容与上游 blob **逐字节一致**：
+# git hash-object 可直接与上游 blob sha 比对，同步上游时零假差异。
+extensions/geoip/version.rc      -text
+extensions/geoip/extension.cpp   -text
+extensions/geoip/extension.h     -text
+extensions/geoip/smsdk_config.h  -text
+
+# 二进制：禁止任何行尾转换
+*.so            binary
+*.dll           binary
+*.mmdb          binary
+*.zip           binary
+*.tar.gz        binary
+*.png           binary
+*.ico           binary

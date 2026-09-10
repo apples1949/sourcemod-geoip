@@ -1,0 +1,24 @@
+# 构建产物
+/out/
+/dist/
+/build/
+
+# 本地拉取的依赖与 SourceMod 源码树
+/deps/
+/sm/
+/sourcemod/
+hl2sdk-*/
+mmsource-*/
+mysql-5*
+
+# 运行时数据库（体积大且需自行申请，不入库）
+*.mmdb
+GeoLite2-*.tar.gz
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+*.user
+.DS_Store
+Thumbs.db

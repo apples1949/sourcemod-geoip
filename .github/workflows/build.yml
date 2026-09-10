@@ -1,0 +1,116 @@
+name: Build GeoIP Extension
+
+# 编译 SourceMod GeoIP 扩展，产出可用的 geoip.ext.so。
+#
+# 背景：GeoIP 是 SourceMod 的 in-tree 扩展（引用 SourceMod 自身构建系统与 public/ 头文件），
+# 无法脱离 SourceMod 源码树独立编译。因此本工作流按矩阵分别拉取 SourceMod 的
+# 1.11-dev / 1.12-dev 分支，把 extensions/geoip/ 同步进去后用官方 AMBuild 流程编译，
+# 从而保证同一份扩展源码在两个平台版本上都产出正确的二进制。
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# 只读权限即可完成编译
+permissions:
+  contents: read
+
+# 同一分支的重复触发自动取消旧任务（保留 tag / 手动触发）
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    name: SourceMod ${{ matrix.sm_branch }}
+    runs-on: ubuntu-latest
+
+    # 官方 SourceMod 构建容器（Debian + clang），环境与上游 CI 一致
+    container:
+      image: ghcr.io/alliedmodders/build-containers/debian11-clang22:latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        sm_branch:
+          - '1.11-dev'
+          - '1.12-dev'
+
+    steps:
+      - name: Checkout extension source
+        uses: actions/checkout@v4
+
+      - name: Checkout SourceMod (${{ matrix.sm_branch }})
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/sourcemod
+          ref: ${{ matrix.sm_branch }}
+          path: sm
+          # submodule 必须拉取：public/amtl（am-string.h）、sourcepawn、versionlib、
+          # hl2sdk-manifests 等构建期依赖都在 submodule 里
+          submodules: recursive
+
+      - name: Cache Metamod:Source
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ matrix.sm_branch }}-${{ hashFiles(format('sm/tools/checkout-deps.sh')) }}
+          restore-keys: |
+            deps-${{ matrix.sm_branch }}-
+
+      - name: Show toolchain
+        shell: bash
+        run: |
+          python3 --version
+          clang++ --version | head -n 1
+          echo "SourceMod product.version: $(tr -d '\n' < sm/product.version)"
+
+      - name: Build GeoIP extension
+        shell: bash
+        # 脚本会：同步扩展源码 -> tools/checkout-deps.sh 拉 Metamod:Source
+        #        -> configure.py --sdks=none --no-mysql --targets=x86 -> ambuild
+        run: |
+          chmod +x tools/build-geoip.sh
+          ./tools/build-geoip.sh --sourcemod "$PWD/sm" --deps "$PWD/deps" --out "$PWD/out"
+
+      - name: Verify artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          SO="out/package/addons/sourcemod/extensions/geoip.ext.so"
+          [ -f "$SO" ] || { echo "::error::$SO 不存在，构建未产出二进制"; exit 1; }
+          echo "size : $(stat -c%s "$SO") bytes"
+          file "$SO" || true
+
+          # 32 位 ELF 共享对象（SourceMod 服务端架构为 x86）
+          if ! head -c 20 "$SO" | od -An -tx1 | tr -d ' \n' | grep -qi '^7f454c46'; then
+            echo "::error::$SO 不是 ELF 文件"; exit 1
+          fi
+          if ! file "$SO" | grep -q 'ELF 32-bit LSB shared object'; then
+            echo "::error::$SO 不是 32 位 ELF 共享对象（--targets 是否被覆盖？）"; exit 1
+          fi
+
+          # 确认扩展元信息已编入二进制（SMEXT_CONF_NAME "GeoIP"）
+          if ! grep -aq 'GeoIP' "$SO"; then
+            echo "::error::二进制中未找到 GeoIP 标识，产物可能无效"; exit 1
+          fi
+          echo "ok: 32 位 ELF 共享对象，且包含 GeoIP 标识"
+
+      - name: Package extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          ( cd out/package && zip -r9 "$GITHUB_WORKSPACE/dist/geoip-ext-${{ matrix.sm_branch }}.zip" addons )
+          ls -lh dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: geoip-ext-${{ matrix.sm_branch }}
+          path: dist/geoip-ext-${{ matrix.sm_branch }}.zip
+          if-no-files-found: error
+          retention-days: 30
