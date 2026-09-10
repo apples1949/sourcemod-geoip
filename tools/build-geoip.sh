@@ -440,7 +440,10 @@ fi
 
 mkdir -p "$OUT_DIR/package/addons/sourcemod/extensions"
 cp -f "$BIN" "$OUT_DIR/package/addons/sourcemod/extensions/$EXT_NAME"
-printf '%s\n' "$SM_TREE" > "$OUT_DIR/package/BUILD_SOURCEMOD_TREE.txt"
+# 构建树路径只作本地排查用，写到产物目录**之外**：
+# package/ 里的任何文件都会被打进 zip 发给用户（此前 BUILD_SOURCEMOD_TREE.txt
+# 就是这样混进包里的，而它只是构建路径，对用户毫无意义）。
+printf '%s\n' "$SM_TREE" > "$OUT_DIR/build-sourcemod-tree.txt"
 
 echo "[ok] 二进制 -> $BIN"
 echo "[ok] 已复制 -> $OUT_DIR/package/addons/sourcemod/extensions/$EXT_NAME"

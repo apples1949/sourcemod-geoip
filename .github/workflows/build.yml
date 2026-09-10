@@ -364,11 +364,15 @@ jobs:
           # 而且归档名里的 "D:" 还会被 tar 当成「远程主机:路径」。
           # 这里刻意用单行 python -c（不用 heredoc）：heredoc 在多行 YAML 里对缩进
           # 很敏感，容易写出坏脚本。
-          python -c "import os,sys,zipfile;root='out/package';z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED);[z.write(os.path.join(dp,fn),os.path.relpath(os.path.join(dp,fn),root).replace(os.sep,'/')) for dp,dn,fns in os.walk(root) for fn in sorted(fns)];z.close();print('wrote',sys.argv[1],os.path.getsize(sys.argv[1]),'bytes')" "$ZIP"
+          # 只打包 addons/（package/ 下若混入别的文件，不应发给用户）。
+          python -c "import os,sys,zipfile;p=sys.argv[1];z=zipfile.ZipFile(p,'w',zipfile.ZIP_DEFLATED);r='out/package/addons';[z.write(os.path.join(dp,fn),os.path.relpath(os.path.join(dp,fn),'out/package').replace(os.sep,'/')) for dp,dn,fns in os.walk(r) for fn in sorted(fns)];z.close();print('wrote',p,os.path.getsize(p),'bytes')" "$ZIP"
 
           [ -f "$ZIP" ] || { echo "::error::打包失败，未生成 $ZIP"; exit 1; }
-          # 确认归档是合法 zip、且目录结构正确（addons/... 而非 package/addons/...）
-          python -c "import sys,zipfile;ns=zipfile.ZipFile(sys.argv[1]).namelist();print('\n'.join(ns[:8]));w=[n for n in ns if n.startswith('addons/sourcemod/extensions/geoip.ext.')];sys.exit('error: 缺少 addons/sourcemod/extensions/geoip.ext.*') if not w else None;sys.exit('error: 归档内多了一层 package/ 目录') if any(n.startswith('package/') for n in ns) else None;print('ok: 合法 zip，目录结构正确 ->',w[0])" "$ZIP"
+          # 确认归档合法（能被 zipfile 打开）且目录结构正确。
+          # 重要：只打印 ASCII 状态。归档内的条目名可能含非 ASCII（例如构建路径里的
+          # 用户名），Windows 的 cp1252 控制台一旦输出这种内容就会抛 UnicodeEncodeError
+          # 把整个步骤搞挂 —— 这也是为什么这里不打印条目清单。
+          python -c "import sys,zipfile;ns=zipfile.ZipFile(sys.argv[1]).namelist();b=[n for n in ns if n.startswith('addons/')];print('entries in addons/: %d' % len(b));sys.exit('error: not a valid zip or missing addons/sourcemod/extensions/geoip.ext.*') if not [n for n in b if n.startswith('addons/sourcemod/extensions/geoip.ext.')] else None;sys.exit('error: contains package/ prefix') if any(n.startswith('package/') for n in ns) else None;print('ok: valid zip, layout ok')" "$ZIP"
           ls -lh dist
 
           # 校验和：优先 sha256sum / shasum，都没有就用 python 兜底

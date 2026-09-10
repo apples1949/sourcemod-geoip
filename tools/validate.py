@@ -403,6 +403,27 @@ try:
             else:
                 wrn("未校验归档是否为合法 zip（tar -a 的病态产物会漏过）")
 
+            # 打包只应包含 addons/：package/ 下的其它文件不该发给用户
+            if "out/package/addons" in pkg_code:
+                ok("打包只遍历 out/package/addons（杂物文件不会入包）")
+            else:
+                wrn("打包遍历整个 out/package，混入其中的文件会被打进发布包")
+
+        # --- 工作流里的 python -c 不能向 cp1252 控制台打印非 ASCII ---
+        # Windows 上 python 的 stdout 是 cp1252；一旦 print 出非 ASCII（例如文件名、
+        # 路径里的中文），整步会以 UnicodeEncodeError 失败。本仓库已因此在 Windows 上
+        # 失败过。这里直接扫源码：python -c "..." 里若含带非 ASCII 字面量的 print，
+        # 判为错误（改成 ASCII 状态输出或显式 reconfigure）。
+        pycmds = re.findall(r'python -c "((?:[^"\\]|\\.)*)"', runs_all)
+        nonascii_print = [c for c in pycmds
+                          if "print(" in c and any(ord(ch) > 127 for ch in c)]
+        if nonascii_print:
+            for c in nonascii_print:
+                bad("工作流里的 python -c 向控制台打印非 ASCII（Windows cp1252 会崩）: "
+                    + c[:70])
+        elif pycmds:
+            ok(f"工作流里 {len(pycmds)} 条 python -c 均只输出 ASCII")
+
         # 产物校验必须区分 ELF / PE，且不能弱到形同虚设 ---
         if "ELF 32-bit LSB shared object" in runs:
             ok("校验 Linux 产物为 32 位 ELF 共享对象")
