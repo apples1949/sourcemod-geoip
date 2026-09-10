@@ -20,6 +20,13 @@ import subprocess
 import sys
 import tempfile
 
+# Windows 上 stdout 默认是 cp1252/ANSI，打印中文会抛 UnicodeEncodeError
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
+
 try:
     import yaml
 except ImportError:

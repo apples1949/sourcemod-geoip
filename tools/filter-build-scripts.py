@@ -32,6 +32,15 @@ import argparse
 import re
 import sys
 
+# Windows 上 Python 的 stdout 默认用 cp1252/ANSI 编码，打印中文会直接抛
+# UnicodeEncodeError（即使只是提示信息也会让整个脚本失败）。
+# 这里强制用 UTF-8，并对无法编码的字符降级而不是崩溃。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001  （极老的 Python 没有 reconfigure）
+    pass
+
 # 必须保留（顺序无关）；键用于报错，值是 AMBuildScript 中出现的形式
 KEEP = {
     "versionlib": "versionlib/AMBuilder",

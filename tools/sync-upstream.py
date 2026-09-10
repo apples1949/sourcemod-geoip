@@ -19,6 +19,13 @@ import sys
 import time
 import urllib.request
 
+# Windows 上 stdout 默认是 cp1252/ANSI，打印中文会抛 UnicodeEncodeError
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
+
 REPO_SLUG = "alliedmodders/sourcemod"
 SUBDIR = "extensions/geoip"
 HERE = os.path.dirname(os.path.abspath(__file__))

@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """校验本仓库的完整性：文件清单、YAML 工作流、脚本关键点、编码/行尾。"""
+import glob
 import hashlib
 import io
 import os
 import re
 import sys
+import subprocess
 
-# Windows 控制台默认 GBK，直接 print 中文会乱码/抛错
+# Windows 控制台默认 GBK/cp1252，直接 print 中文会乱码/抛错
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:  # noqa: BLE001
     pass
 
@@ -508,6 +511,32 @@ if "core/sourcehook/sourcehook.h" in sh:
     ok("校验 core/sourcehook/sourcehook.h")
 else:
     bad("未校验 core/sourcehook/sourcehook.h")
+# --- Python 工具必须在 cp1252 控制台下也不崩 ---
+# Windows 上 stdout 默认是 cp1252/ANSI；只要脚本里 print 了中文，就会抛
+# UnicodeEncodeError 并以非 0 退出（CI 上实测：filter-build-scripts.py 因此失败）。
+# 逐个子进程在 PYTHONIOENCODING=cp1252 下试跑，确认没有编码崩溃。
+py_tools = sorted(glob.glob(os.path.join(REPO, "tools", "*.py")))
+enc_env = dict(os.environ, PYTHONIOENCODING="cp1252")
+enc_bad = []
+for tool in py_tools:
+    name = os.path.basename(tool)
+    if name == "validate.py":
+        continue  # 自身在跑，跳过
+    try:
+        p = subprocess.run([sys.executable, tool, "--help"], capture_output=True,
+                           encoding="utf-8", errors="replace", env=enc_env, timeout=60)
+    except Exception as exc:  # noqa: BLE001
+        enc_bad.append(f"{name}(无法执行: {exc})")
+        continue
+    text = (p.stdout or "") + (p.stderr or "")
+    if "UnicodeEncodeError" in text:
+        enc_bad.append(f"{name}(cp1252 下 UnicodeEncodeError)")
+if enc_bad:
+    for b in enc_bad:
+        bad(f"{b} —— 需要 sys.stdout.reconfigure(encoding='utf-8')")
+else:
+    ok(f"{len(py_tools) - 1} 个 Python 工具在 cp1252 控制台下均不崩溃")
+
 # checkout-deps.sh 只应被用来读取版本号，不应再用来拉取依赖
 if re.search(r"bash\s+\"?\$SM_TREE/tools/checkout-deps\.sh", sh):
     bad("仍在执行 checkout-deps.sh 拉取依赖（会下载 300MB MySQL 与 hl2sdk 镜像，且可能取错分支）")
@@ -572,7 +601,6 @@ else:
 
 # bash 语法检查（有 bash 就真跑一遍 bash -n，比数括号可靠）
 import shutil
-import subprocess
 
 bash = shutil.which("bash")
 if bash is None and os.path.exists(r"C:\Program Files\Git\bin\bash.exe"):
