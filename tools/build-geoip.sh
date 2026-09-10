@@ -336,10 +336,10 @@ mkdir -p "$BUILD_DIR"
 
 # 诊断信息：1.12 的 SDK 解析依赖 deps 目录里实际存在哪些 hl2sdk-*，
 # 出问题时这段日志能直接说明"库里有什么"。
+# 注意用 ls|sed 而不是 find -printf：后者在 Git for Windows 上未必可用。
 if [ -d "$DEPS_DIR" ]; then
   echo "[deps] $DEPS_DIR 内容:"
-  find "$DEPS_DIR" -maxdepth 1 -mindepth 1 -type d -printf '  %f\n' 2>/dev/null | sort || \
-    ls -1 "$DEPS_DIR" | sed 's/^/  /'
+  ls -1 "$DEPS_DIR" 2>/dev/null | sed 's/^/  /'
 fi
 
 info "configure"

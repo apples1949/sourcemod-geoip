@@ -1,11 +1,14 @@
 name: Build GeoIP Extension
 
-# 编译 SourceMod GeoIP 扩展，产出可用的 geoip.ext.so（含 SourceMod PR #2335 中文修复）。
+# 编译 SourceMod GeoIP 扩展（含 PR #2335 中文语言码修复），产出 1.11 / 1.12 平台、
+# Linux / Windows 两个系统的 geoip.ext.so / geoip.ext.dll。
 #
 # 背景：GeoIP 是 SourceMod 的 in-tree 扩展（引用 SourceMod 自身构建系统与 public/ 头文件），
 # 无法脱离 SourceMod 源码树独立编译。因此本工作流按矩阵分别拉取 SourceMod 的
 # 1.11-dev / 1.12-dev 分支，把 extensions/geoip/ 同步进去后用官方 AMBuild 流程编译，
-# 从而保证同一份扩展源码在两个平台版本上都产出正确的二进制。
+# 从而保证同一份扩展源码在各平台上都产出正确的二进制。
+#
+# 打 v* 标签（如 v1.0.0）时额外创建一个 Release，把各平台产物作为附件发布。
 
 on:
   push:
@@ -14,7 +17,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# 只读权限即可完成编译
+# 默认只读；发布 job 单独申请 contents: write
 permissions:
   contents: read
 
@@ -25,24 +28,39 @@ concurrency:
 
 jobs:
   build:
-    name: SourceMod ${{ matrix.sm_branch }}
-    # 不用第三方构建镜像：工具链在本工作流里显式装好。
-    # 之前引用 ghcr.io 上的镜像时容器内没有 clang++（PATH 里找不到编译器），
-    # 换成标准 runner + apt 显式安装，行为确定、可复现。
-    runs-on: ubuntu-22.04
+    name: ${{ matrix.os_name }} / SourceMod ${{ matrix.sm_branch }}
+    runs-on: ${{ matrix.runner }}
 
     strategy:
       fail-fast: false
       matrix:
-        sm_branch:
-          - '1.11-dev'
-          - '1.12-dev'
+        include:
+          # ---- Linux（官方服务端主力平台）----
+          - runner: ubuntu-22.04
+            os_name: linux
+            os_short: linux
+            sm_branch: '1.11-dev'
+            ext: so
+            cc: clang-14
+            cxx: clang++-14
+          - runner: ubuntu-22.04
+            os_name: linux
+            os_short: linux
+            sm_branch: '1.12-dev'
+            ext: so
+            cc: clang-14
+            cxx: clang++-14
+          # ---- Windows ----
+          # 不设 CC/CXX：交给 AMBuild 自动探测 MSVC
+          - runner: windows-2022
+            os_name: windows
+            os_short: windows
+            sm_branch: '1.12-dev'
+            ext: dll
 
     env:
-      # C 源码（maxminddb.c）走 clang，避免默认落到 gcc。
-      # 与 SourceMod 官方 PR 检查在 ubuntu-22.04 上使用的 clang-14 保持一致。
-      CC: clang-14
-      CXX: clang++-14
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
 
     steps:
       - name: Checkout extension source
@@ -56,9 +74,11 @@ jobs:
           git config --global core.autocrlf false
           git config --global core.eol lf
 
-      # 依赖清单对齐 SourceMod 官方 PR 检查（sourcemod/.github/workflows/pr-checks.yml）：
-      # 目标是 x86，64 位宿主上必须有 i386 的 multilib 开发库，否则 32 位链接会失败。
-      - name: Install build toolchain
+      # ---------- Linux 工具链 ----------
+      # 依赖清单对齐 SourceMod 官方 PR 检查（pr-checks.yml 在 ubuntu-22.04 上用 clang-14）：
+      # 目标是 x86，64 位宿主必须有 i386 的 multilib 开发库，否则 32 位链接会失败。
+      - name: Install toolchain (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -70,36 +90,47 @@ jobs:
             linux-libc-dev linux-libc-dev:i386 lib32z1-dev \
             patch zip file python3 python3-pip python3-venv
 
-          # AMBuild 装进独立 venv（ubuntu 的 python3 受 PEP 668 保护，不能直接装到系统环境）
-          python3 -m venv "$HOME/ambuild-venv"
-          "$HOME/ambuild-venv/bin/pip" install --quiet --upgrade pip setuptools wheel
-          "$HOME/ambuild-venv/bin/pip" install --quiet \
-            "git+https://github.com/alliedmodders/ambuild.git"
+      # ---------- Windows 工具链 ----------
+      # windows-2022 自带 MSVC；这里只装 AMBuild 与打包工具。
+      - name: Install toolchain (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -c "import sys; print('python', sys.version)"
+          command -v patch >/dev/null 2>&1 && echo "patch: $(command -v patch)" || echo "patch 缺失（将回退到 git apply）"
+          command -v zip   >/dev/null 2>&1 && echo "zip: $(command -v zip)"     || echo "zip 缺失（将回退到 tar）"
 
+      - name: Install AMBuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv "$HOME/ambuild-venv" 2>/dev/null || python3 -m venv "$HOME/ambuild-venv"
+          VENV_BIN="$HOME/ambuild-venv/bin"
+          [ -d "$VENV_BIN" ] || VENV_BIN="$HOME/ambuild-venv/Scripts"   # Windows 布局
+          "$VENV_BIN/pip" install --quiet --upgrade pip setuptools wheel
+          "$VENV_BIN/pip" install --quiet "git+https://github.com/alliedmodders/ambuild.git"
           # PATH 必须在这里写入，后续步骤才拿得到（GITHUB_PATH 只对之后的步骤生效）
-          echo "$HOME/ambuild-venv/bin" >> "$GITHUB_PATH"
+          echo "$VENV_BIN" >> "$GITHUB_PATH"
 
       - name: Verify toolchain
         shell: bash
         run: |
           set -euo pipefail
-          echo "python3  : $(python3 --version)"
-          echo "clang++  : $(clang++ --version | head -n 1)"
-          echo "ambuild  : $(command -v ambuild || echo 缺失)"
-          echo "patch    : $(command -v patch)"
-          echo "zip      : $(command -v zip)"
-
-          # 缺任何一个都立刻失败，避免后面出现难懂的报错
-          for t in clang++ patch zip python3 ambuild; do
+          echo "os      : ${{ runner.os }}"
+          echo "python  : $(python --version 2>&1)"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            echo "clang++ : $(clang++ --version | head -n 1)"
+            # 确认能链接 32 位（SourceMod 服务端是 x86）
+            echo 'int main(){return 0;}' > /tmp/t32.c
+            clang++ -m32 /tmp/t32.c -o /tmp/t32 \
+              || { echo "::error::无法编译 32 位程序，缺少 multilib（i386）开发库"; exit 1; }
+            file /tmp/t32
+            echo "ok: 32 位工具链可用"
+          fi
+          for t in patch python ambuild; do
             command -v "$t" >/dev/null 2>&1 || { echo "::error::工具链缺少 $t"; exit 1; }
           done
-
-          # 确认能链接 32 位（SourceMod 服务端是 x86）
-          echo 'int main(){return 0;}' > /tmp/t32.c
-          clang++ -m32 /tmp/t32.c -o /tmp/t32 \
-            || { echo "::error::无法编译 32 位程序，缺少 multilib（i386）开发库"; exit 1; }
-          file /tmp/t32
-          echo "ok: 32 位工具链可用"
 
       - name: Checkout SourceMod (${{ matrix.sm_branch }})
         uses: actions/checkout@v4
@@ -107,18 +138,17 @@ jobs:
           repository: alliedmodders/sourcemod
           ref: ${{ matrix.sm_branch }}
           path: sm
-          # submodule 必须拉取：public/amtl（AMTL 头文件，其仓库内还有一层 amtl/）、
-          # sourcepawn（sourcepawn/include）、public/safetyhook、versionlib 等构建期依赖。
-          # 未拉取时 tools/build-geoip.sh 会在自检阶段直接报错，不会走到编译。
+          # submodule 必须拉取：public/amtl（其仓库内还有一层 amtl/）、sourcepawn、
+          # public/safetyhook（仅 1.12 有）、versionlib、hl2sdk-manifests 等
           submodules: recursive
 
-      - name: Cache Metamod:Source
+      - name: Cache dependencies
         uses: actions/cache@v4
         with:
           path: deps
-          key: deps-${{ matrix.sm_branch }}-${{ hashFiles('sm/tools/checkout-deps.sh') }}
+          key: deps-${{ matrix.os_short }}-${{ matrix.sm_branch }}-${{ hashFiles('sm/tools/checkout-deps.sh') }}
           restore-keys: |
-            deps-${{ matrix.sm_branch }}-
+            deps-${{ matrix.os_short }}-${{ matrix.sm_branch }}-
 
       - name: Show SourceMod revision
         shell: bash
@@ -128,9 +158,9 @@ jobs:
 
       - name: Build GeoIP extension
         shell: bash
-        # 脚本会：核验 PR #2335 中文修复 -> 同步扩展源码
-        #        -> checkout-deps.sh 拉 Metamod:Source
-        #        -> configure.py --sdks=none --no-mysql --targets=x86 -> ambuild
+        # 脚本会：核验 PR #2335 中文修复 -> 同步扩展源码 -> 裁剪构建列表为只构建 geoip
+        #        -> 克隆 Metamod:Source（正确分支）+ mock SDK
+        #        -> configure.py --sdks=present --no-mysql --targets=x86 -> ambuild
         run: |
           chmod +x tools/build-geoip.sh
           ./tools/build-geoip.sh --sourcemod "$PWD/sm" --deps "$PWD/deps" --out "$PWD/out"
@@ -139,24 +169,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          SO="out/package/addons/sourcemod/extensions/geoip.ext.so"
+          SO="out/package/addons/sourcemod/extensions/geoip.ext.${{ matrix.ext }}"
           [ -f "$SO" ] || { echo "::error::$SO 不存在，构建未产出二进制"; exit 1; }
-          echo "size : $(stat -c%s "$SO") bytes"
-          file "$SO"
+          echo "size : $(stat -c%s "$SO" 2>/dev/null || stat -f%z "$SO") bytes"
+          file "$SO" 2>/dev/null || true
 
-          # ELF 魔数
-          if ! head -c 4 "$SO" | od -An -tx1 | tr -d ' \n' | grep -qi '^7f454c46'; then
-            echo "::error::$SO 不是 ELF 文件"; exit 1
+          if [ "${{ matrix.ext }}" = "so" ]; then
+            head -c 4 "$SO" | od -An -tx1 | tr -d ' \n' | grep -qi '^7f454c46' \
+              || { echo "::error::$SO 不是 ELF 文件"; exit 1; }
+            file "$SO" | grep -q 'ELF 32-bit LSB shared object' \
+              || { echo "::error::$SO 不是 32 位 ELF 共享对象"; exit 1; }
+          else
+            # Windows PE 校验：MZ 头、e_lfanew(0x3C) 处的 PE\0\0 签名、
+            # 以及可选头魔数 0x10b（PE32，32 位）。
+            # 注意不能只 grep 'PE'——那个签名太短，几乎任何文件都能命中。
+            # 全程用 od/awk，不依赖 file(1) 是否存在。
+            head -c 2 "$SO" | od -An -tx1 | tr -d ' \n' | grep -qi '^4d5a' \
+              || { echo "::error::$SO 不是 PE 文件（缺 MZ 头）"; exit 1; }
+
+            e_lfanew=$(od -An -tu4 -j60 -N4 "$SO" | tr -d ' \n')
+            [ -n "$e_lfanew" ] || { echo "::error::读取 e_lfanew 失败"; exit 1; }
+            sig=$(od -An -c -j"$e_lfanew" -N4 "$SO" | tr -d ' \n')
+            [ "$sig" = "PE\\0\\0" ] || { echo "::error::0x$e_lfanew 处没有 PE\\0\\0 签名（实际 '$sig'）"; exit 1; }
+
+            magic=$(od -An -tx1 -j$((e_lfanew + 24)) -N2 "$SO" | tr -d ' \n')
+            [ "$magic" = "0b01" ] \
+              || { echo "::error::可选头魔数为 $magic，期望 0b01（32 位 PE32）—— --targets 是否被覆盖？"; exit 1; }
+            echo "PE ok: e_lfanew=0x$e_lfanew, 可选头魔数=0x$magic (PE32 / 32 位)"
           fi
-          # 32 位 ELF 共享对象（SourceMod 服务端架构为 x86）
-          if ! file "$SO" | grep -q 'ELF 32-bit LSB shared object'; then
-            echo "::error::$SO 不是 32 位 ELF 共享对象（--targets 是否被覆盖？）"; exit 1
-          fi
+
           # 扩展元信息（SMEXT_CONF_NAME "GeoIP"）
-          if ! grep -aq 'GeoIP' "$SO"; then
-            echo "::error::二进制中未找到 GeoIP 标识，产物可能无效"; exit 1
-          fi
-          echo "ok: 32 位 ELF 共享对象，且包含 GeoIP 标识"
+          grep -aq 'GeoIP' "$SO" || { echo "::error::二进制中未找到 GeoIP 标识"; exit 1; }
+          echo "ok: geoip.ext.${{ matrix.ext }} 校验通过"
 
       - name: Verify PR #2335 Chinese fix is compiled in
         shell: bash
@@ -170,7 +214,8 @@ jobs:
             || { echo "::error::构建用的源码缺少 zh-CN 归一化赋值"; exit 1; }
 
           echo "--- 产物中的字符串 ---"
-          if grep -aq 'zh-CN' out/package/addons/sourcemod/extensions/geoip.ext.so; then
+          SO="out/package/addons/sourcemod/extensions/geoip.ext.${{ matrix.ext }}"
+          if grep -aq 'zh-CN' "$SO"; then
             echo "ok: 二进制内含 zh-CN（修复已编入）"
           else
             echo "::error::二进制内未找到 zh-CN，中文修复可能没被编进去"; exit 1
@@ -181,14 +226,26 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          ( cd out/package && zip -r9 "$GITHUB_WORKSPACE/dist/geoip-ext-${{ matrix.sm_branch }}.zip" addons )
+          NAME="geoip-ext-${{ matrix.sm_branch }}-${{ matrix.os_short }}"
+          cd out/package
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # Git for Windows 自带 tar（bsdtar，支持 zip）
+            tar -a -c -f "$GITHUB_WORKSPACE/dist/$NAME.zip" addons
+          else
+            zip -r9 "$GITHUB_WORKSPACE/dist/$NAME.zip" addons
+          fi
+          cd "$GITHUB_WORKSPACE"
           ls -lh dist
+          sha256sum "dist/$NAME.zip" 2>/dev/null | tee "dist/$NAME.zip.sha256" || \
+            shasum -a 256 "dist/$NAME.zip" | tee "dist/$NAME.zip.sha256"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: geoip-ext-${{ matrix.sm_branch }}
-          path: dist/geoip-ext-${{ matrix.sm_branch }}.zip
+          name: geoip-ext-${{ matrix.sm_branch }}-${{ matrix.os_short }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -197,13 +254,100 @@ jobs:
         shell: bash
         run: |
           {
-            echo "### GeoIP / SourceMod ${{ matrix.sm_branch }}"
+            echo "### ${{ matrix.os_name }} / SourceMod ${{ matrix.sm_branch }}"
             echo
             echo "| 项 | 值 |"
             echo "| --- | --- |"
-            echo "| runner | ubuntu-22.04 |"
-            echo "| python | $(python3 --version 2>&1) |"
-            echo "| clang | $(clang++ --version 2>/dev/null | head -n 1 || echo 'n/a') |"
+            echo "| runner | ${{ matrix.runner }} |"
+            echo "| python | $(python --version 2>&1) |"
             echo "| SourceMod | $(tr -d '\n' < sm/product.version 2>/dev/null || echo 'n/a') |"
-            echo "| PR #2335 修复标记 | $(grep -c 'strcmp(code, "chi")' sm/extensions/geoip/geoip_util.cpp 2>/dev/null || echo 0) |"
+            echo "| PR #2335 修复标记 | $(grep -c 'strcmp(code, \"chi\")' sm/extensions/geoip/geoip_util.cpp 2>/dev/null || echo 0) |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------------
+  # 发布：仅在推送 v* 标签时执行
+  # 把各平台产物合并成「每个 SourceMod 版本一个包」（含 .so 与 .dll），
+  # 附到同一个 Release 上。
+  # ------------------------------------------------------------------
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List downloaded artifacts
+        shell: bash
+        run: find artifacts -type f | sort
+
+      - name: Assemble per-SourceMod-version packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+
+          for sm in 1.11-dev 1.12-dev; do
+            stage="stage/$sm"
+            mkdir -p "$stage/addons/sourcemod/extensions"
+
+            found=0
+            for os in linux windows; do
+              for f in artifacts/geoip-ext-$sm-$os/*.zip; do
+                [ -f "$f" ] || continue
+                # 从各平台包里取出扩展二进制，合并到同一个包
+                tmp="unpack/$sm-$os"
+                mkdir -p "$tmp"
+                unzip -q -o "$f" -d "$tmp"
+                for bin in "$tmp"/addons/sourcemod/extensions/*; do
+                  [ -f "$bin" ] || continue
+                  cp -f "$bin" "$stage/addons/sourcemod/extensions/"
+                  echo "  + $sm: $(basename "$bin")"
+                  found=1
+                done
+              done
+            done
+
+            if [ "$found" -eq 0 ]; then
+              echo "::error::$sm 没有任何产物"
+              exit 1
+            fi
+
+            ( cd "$stage" && zip -r9 "$GITHUB_WORKSPACE/release/geoip-ext-$sm.zip" addons )
+          done
+
+          cd release
+          sha256sum *.zip > SHA256SUMS.txt
+          echo "--- release 资产 ---"
+          ls -lh
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.zip
+            release/SHA256SUMS.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            SourceMod GeoIP 扩展，**包含 [PR #2335](https://github.com/alliedmodders/sourcemod/pull/2335) 的中文语言码修复**
+            （该修复上游只在 1.13 / 1.12 有，1.11 至今没有）。
+
+            | 下载 | 适用 SourceMod | 内含 |
+            | --- | --- | --- |
+            | `geoip-ext-1.11-dev.zip` | SourceMod 1.11 | `geoip.ext.so`（Linux）+ `geoip.ext.dll`（Windows） |
+            | `geoip-ext-1.12-dev.zip` | SourceMod 1.12 | `geoip.ext.so`（Linux）+ `geoip.ext.dll`（Windows） |
+
+            安装：把压缩包解压到服务端根目录（包内已按 `addons/sourcemod/extensions/` 组织）。
+
+            还需自行准备 GeoIP 数据库 `GeoLite2-City.mmdb`，放到
+            `addons/sourcemod/configs/geoip/`，详见仓库 README。
+
+            校验和见 `SHA256SUMS.txt`。

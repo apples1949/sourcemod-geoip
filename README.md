@@ -39,8 +39,9 @@ GeoIP 扩展 `geoip.ext.so`。
 在 1.11 / 1.12 平台上编译出**带该修复**的 GeoIP：
 
 - 扩展源码取自含修复的 `1.12-dev`，因此天然包含此修复；
-- 工作流按矩阵分别对 `1.11-dev` / `1.12-dev` 的源码树编译，
-  得到两个平台各自的二进制 —— 1.11 那份同样带着修复；
+- 工作流按矩阵分别对 `1.11-dev` / `1.12-dev` 的源码树编译，并同时产出
+  **Linux（`geoip.ext.so`）与 Windows（`geoip.ext.dll`）** 两个平台的二进制
+  —— 1.11 那份同样带着修复；
 - 构建前用 `patches/geoip_fix_2335.patch` **显式核验**修复存在：
   万一将来源码被换回 `1.11-dev` 的无修复版本，会自动打上补丁；
   补丁也打不上就**直接中止构建**，绝不静默产出没有中文支持的二进制。
@@ -49,27 +50,41 @@ GeoIP 扩展 `geoip.ext.so`。
 
 ## 产物与安装
 
-每次 Actions 会产出两个 zip 压缩包：
+### 从 Releases 下载（推荐）
 
-| 产物 | 适用 SourceMod | 含 PR #2335 |
+打 `v*` 标签（如 `v1.0.0`）后，Actions 会自动创建 Release，附件按 SourceMod 版本打包，
+每个包内含 **Linux 与 Windows** 两个二进制：
+
+| Release 附件 | 适用 SourceMod | 内含 |
 | --- | --- | --- |
-| `geoip-ext-1.11-dev.zip` | SourceMod 1.11（对 1.11-dev 源码树编译） | ✅ |
-| `geoip-ext-1.12-dev.zip` | SourceMod 1.12（对 1.12-dev 源码树编译） | ✅ |
+| `geoip-ext-1.11-dev.zip` | SourceMod 1.11 | `geoip.ext.so`（Linux）+ `geoip.ext.dll`（Windows） |
+| `geoip-ext-1.12-dev.zip` | SourceMod 1.12 | `geoip.ext.so`（Linux）+ `geoip.ext.dll`（Windows） |
+| `SHA256SUMS.txt` | — | 上面两个包的校验和 |
 
-> 两个平台的二进制**分别构建**，不要混用：请根据服务端的 SourceMod 版本下载对应压缩包。
-> 两者都包含中文语言码修复，区别只在于链接的 SourceMod 头文件 / 版本库不同。
+```bash
+# 发布一个版本
+git tag v1.0.0
+git push origin v1.0.0
+```
 
-安装步骤：
+也可以在每次 Actions 运行页的 **Artifacts** 里拿到**分平台**的包
+（`geoip-ext-<版本>-<平台>.zip`，含 `.sha256` 校验和）。
 
-1. 从 Actions 运行页的 **Artifacts** 下载对应版本的 zip；
-2. 解压到服务端根目录（压缩包内已按 `addons/sourcemod/extensions/` 组织好目录结构）：
+> 两套二进制**分别构建**，按服务端平台选用：Linux 服务端用 `.so`，Windows 服务端用 `.dll`。
+> 都包含 PR #2335 中文语言码修复，区别只在于链接的 SourceMod 头文件 / 版本库不同。
+
+### 安装
+
+1. 解压到服务端根目录（包内已按 `addons/sourcemod/extensions/` 组织好目录结构）：
 
    ```
    <游戏服务端>/
-   └── addons/sourcemod/extensions/geoip.ext.so
+   └── addons/sourcemod/extensions/
+       ├── geoip.ext.so      # Linux 服务端用这个
+       └── geoip.ext.dll     # Windows 服务端用这个
    ```
 
-3. 下载 GeoIP 数据库（**不包含在本仓库中**），放到
+2. 下载 GeoIP 数据库（**不包含在本仓库中**），放到
    `addons/sourcemod/configs/geoip/`，文件名使用 `GeoLite2-City.mmdb`：
 
    ```bash
@@ -80,7 +95,7 @@ GeoIP 扩展 `geoip.ext.so`。
      -C addons/sourcemod/configs/geoip/
    ```
 
-4. 重启服务端（或 `sm exts load geoip`），用 `sm exts list` 确认 GeoIP 已加载。
+3. 重启服务端（或 `sm exts load geoip`），用 `sm exts list` 确认 GeoIP 已加载。
 
 扩展启动时会检查数据库文件：若数据库缺失或过期超过 90 天，会在 SourceMod 日志中给出提示。
 
@@ -223,9 +238,15 @@ $ git hash-object extensions/geoip/maxminddb.c
 
 ## 编译细节
 
-### 构建环境
+### 构建矩阵与环境
 
-工作流跑在标准 runner `ubuntu-22.04` 上，工具链在 workflow 里显式安装：
+| 平台 | runner | 编译器 | 产物 |
+| --- | --- | --- | --- |
+| Linux | `ubuntu-22.04` | `clang-14` / `clang++-14` | `geoip.ext.so` |
+| Windows | `windows-2022` | MSVC（AMBuild 自动探测） | `geoip.ext.dll` |
+| SourceMod 版本 | `1.11-dev` 与 `1.12-dev`（Windows 目前只构建 1.12） | | |
+
+**Linux**：工具链在 workflow 里显式安装
 
 ```yaml
 env:
@@ -244,6 +265,10 @@ sudo apt-get install -y clang-14 build-essential gcc-multilib g++-multilib \
 依赖清单与编译器版本对齐 SourceMod 官方 PR 检查
 （`sourcemod/.github/workflows/pr-checks.yml` 在 `ubuntu-22.04` 上用的 `clang-14`）。
 
+**Windows**：`windows-2022` runner 自带 MSVC，**不设** `CC`/`CXX`，
+交由 AMBuild 自动探测（矩阵里 Windows 条目的 `cc`/`cxx` 留空）。
+只额外需要 AMBuild 与打包工具，`patch` 若缺失会自动回退到 `git apply`。
+
 两点说明：
 
 - **必须有 i386 multilib 开发库**：目标是 x86，64 位宿主上缺了这些包，
@@ -251,7 +276,8 @@ sudo apt-get install -y clang-14 build-essential gcc-multilib g++-multilib \
   提前把这类问题暴露出来。
 - **AMBuild 装在独立 venv 里**：Ubuntu 的 `python3` 受 PEP 668 保护，
   不能直接 `pip install` 到系统环境；venv 路径通过 `$GITHUB_PATH` 注入，
-  构建脚本才能在 PATH 上找到 `ambuild` 命令。
+  构建脚本才能在 PATH 上找到 `ambuild` 命令。Windows 上 venv 的
+  `Scripts/` 布局由脚本自动识别。
 
 > 早期版本这里用的是 SourceMod 官方 CI 的镜像
 > `ghcr.io/alliedmodders/build-containers/debian11-clang22`，

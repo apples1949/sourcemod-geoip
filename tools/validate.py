@@ -189,33 +189,52 @@ try:
         ok("存在 jobs.build")
         build = jobs["build"]
         matrix = (build.get("strategy", {}) or {}).get("matrix", {}) or {}
-        branches = matrix.get("sm_branch", [])
-        for want in ["1.11-dev", "1.12-dev"]:
-            if want in branches:
-                ok(f"矩阵包含 SourceMod {want}")
+        entries = matrix.get("include", [])
+        if not entries:
+            bad("矩阵不是 include: 形式，无法确认平台覆盖")
+        combos = {(str(e.get("os_short")), str(e.get("sm_branch"))) for e in entries}
+        # 必须有：Linux 两个 SourceMod 版本 + Windows
+        for want in [("linux", "1.11-dev"), ("linux", "1.12-dev"), ("windows", "1.12-dev")]:
+            if want in combos:
+                ok(f"矩阵包含 {want[0]} / SourceMod {want[1]}")
             else:
-                bad(f"矩阵缺少 SourceMod {want}")
+                bad(f"矩阵缺少 {want[0]} / SourceMod {want[1]}")
+        if any(os_name == "windows" for os_name, _ in combos):
+            ok("包含 Windows 构建")
+        else:
+            bad("未包含 Windows 构建")
+        # Windows 条目必须用 MSVC 自动探测（不能沿用 clang-14 这类 Linux 编译器名）
+        for e in entries:
+            if str(e.get("os_short")) == "windows":
+                if str(e.get("cxx", "")).strip():
+                    wrn(f"Windows 条目指定了 CXX={e.get('cxx')}；Windows 上建议留空交由 AMBuild 探测 MSVC")
+                else:
+                    ok("Windows 条目不指定 CXX，交由 AMBuild 自动探测 MSVC")
+                if str(e.get("ext")) != "dll":
+                    bad("Windows 条目的产物扩展名应为 dll")
+                else:
+                    ok("Windows 产物扩展名为 dll")
         # 工具链必须显式安装：曾经照搬官方 CI 的第三方镜像，
         # 结果容器里没有 clang++（PATH 中找不到编译器）导致构建直接失败。
+        runs_all = "\n".join(str(s.get("run", "")) for s in build.get("steps", []))
         if build.get("container"):
             wrn("仍在使用 container（请确认镜像内确实有可用的 C++ 编译器）")
         else:
             ok("未依赖第三方构建镜像（工具链在本工作流内显式安装）")
 
-        env = build.get("env") or {}
-        if str(env.get("CXX", "")).strip():
-            ok(f"显式指定 C++ 编译器: {env.get('CXX')}")
+        if "clang-14" in runs_all:
+            ok("Linux 使用 clang-14（与 SourceMod 官方 PR 检查一致）")
         else:
-            bad("未显式指定 CXX（依赖自动探测，容易落到不可用的编译器上）")
-
-        runner = str(build.get("runs-on", ""))
-        if runner.startswith("ubuntu-"):
-            ok(f"runner: {runner}")
+            bad("未固定 Linux 的 clang-14")
+        if "windows-2022" in str(matrix):
+            ok("Windows 使用 windows-2022 runner（自带 MSVC）")
         else:
-            wrn(f"runner 非 ubuntu: {runner}")
+            wrn("未指定 windows-2022 runner")
+        if "matrix.cc" in str(build.get("env", {})) or "matrix.cxx" in str(build.get("env", {})):
+            ok("CC/CXX 由矩阵按平台注入（Windows 留空即自动探测）")
 
         steps = build.get("steps", [])
-        runs = "\n".join(str(s.get("run", "")) for s in steps)
+        runs = runs_all
 
         # 关键：必须安装 i386 multilib 开发库，否则 32 位链接失败
         if "i386" in runs and "multilib" in runs:
@@ -240,9 +259,11 @@ try:
             bad("未安装 AMBuild")
 
         if "-m32" in runs:
-            ok("自检 32 位编译能力（-m32 试编译）")
-        else:
+            ok("Linux 自检 32 位编译能力（-m32 试编译）")
+        elif "runner.os == 'Linux'" in runs:
             wrn("未自检 32 位编译能力，multilib 缺失时会到链接阶段才报错")
+        else:
+            bad("未区分平台安装工具链（Linux 需要 multilib + clang-14，Windows 需要 MSVC）")
 
         # 结构化检查：第二个 checkout 必须拉取 sourcemod 且带 submodule
         sm_checkout = None
@@ -271,6 +292,56 @@ try:
             ok("上传构建产物")
         else:
             bad("未上传构建产物")
+
+        # --- 产物校验必须区分 ELF / PE，且不能弱到形同虚设 ---
+        if "ELF 32-bit LSB shared object" in runs:
+            ok("校验 Linux 产物为 32 位 ELF 共享对象")
+        else:
+            bad("未校验 Linux 产物的 ELF 位数")
+        if "e_lfanew" in runs and "PE\\0\\0" in runs:
+            ok("校验 Windows 产物为 PE（读 e_lfanew 定位 PE 签名）")
+        else:
+            bad("Windows 产物的 PE 校验不充分")
+        # 只针对“拿 PE 当二进制签名去 grep”的写法；注释里提到 PE（含警告说明）不算
+        code_only = "\n".join(ln for ln in runs.splitlines()
+                              if not ln.lstrip().startswith("#"))
+        if re.search(r"grep\s+-\S*\s*['\"]PE['\"]", code_only) or \
+           re.search(r"grep\s+['\"]PE['\"]", code_only):
+            bad("用 grep 'PE' 判定 PE 文件：该签名过短，容易误判，应读 e_lfanew 处签名")
+        else:
+            ok("未使用 grep 'PE' 这类弱判定（已排除注释行）")
+        if 'magic=$(od' in runs and '0b01' in runs:
+            ok("校验 PE 可选头魔数为 0x10b（真 32 位，而非仅看文件后缀）")
+        else:
+            bad("未校验 PE 可选头魔数，无法确认是 32 位")
+
+        # --- Release 发布 job（打 v* 标签时把成品发到 Releases）---
+        rel = jobs.get("release")
+        if rel is None:
+            bad("缺少 jobs.release —— 产物无法发布到 Releases")
+        else:
+            ok("存在 jobs.release")
+            if "tags/v" in str(rel.get("if", "")) or "refs/tags" in str(rel.get("if", "")):
+                ok(f"release 仅在标签触发: {rel.get('if')}")
+            else:
+                bad(f"release 未限定标签触发（{rel.get('if')!r}），可能每次 push 都发版")
+            if "build" in str(rel.get("needs", "")):
+                ok("release 依赖 build job（只发布构建成功的产物）")
+            else:
+                bad("release 未依赖 build job")
+            if str((rel.get("permissions") or {}).get("contents", "")) == "write":
+                ok("release 具备 contents: write 权限")
+            else:
+                bad("release 缺少 contents: write 权限，无法创建 Release")
+            rel_text = str(rel.get("steps", []))
+            if "download-artifact" in rel_text and "gh-release" in rel_text:
+                ok("release 下载全部产物并创建 GitHub Release")
+            else:
+                bad("release 未完整实现（缺少 download-artifact 或 gh-release）")
+            if "SHA256SUMS" in str(rel):
+                ok("发布包含 SHA256 校验和")
+            else:
+                wrn("发布未包含校验和文件")
 except ImportError:
     bad("未安装 PyYAML，无法校验")
 except Exception as exc:  # noqa: BLE001
