@@ -345,6 +345,40 @@ if re.search(r"^\s*cd\s+[^|&;]*$", sh, re.M) and "(" not in sh:
 else:
     ok("cd 均在子 shell 中执行（( cd ... )），不污染工作目录")
 
+# 子 shell 陷阱：`cmd | while ... die` 里的 while 在子 shell 中，die 不会终止主脚本
+if re.search(r"\|\s*while\b", sh):
+    bad("存在 `| while` 管道写法：循环体在子 shell 中，die 无法终止主脚本（应改用进程替换 < <(...)）")
+else:
+    ok("无 `| while` 子 shell 陷阱（die 能正常终止脚本）")
+
+# submodule 自检路径必须正确：public/amtl 是 AMTL 的 submodule，
+# 而 AMTL 仓库内还有一层 amtl/，故头文件相对 submodule 根是 amtl/am-string.h。
+# 曾因写成 public/amtl/am-string.h（少一层）导致 CI 直接失败。
+# 脚本里路径是 "$SM_TREE/$dir/$probe" 拼出来的，所以检查数据行本身。
+SUBMODULE_EXPECT = {
+    "public/amtl": "amtl/am-string.h",
+    "sourcepawn": "include/sp_vm_api.h",
+    "public/safetyhook": "include/safetyhook.hpp",
+}
+for sub_dir, rel in SUBMODULE_EXPECT.items():
+    line = f"{sub_dir}:{rel}:"
+    if line in sh:
+        ok(f"submodule 自检项正确：{sub_dir} -> {rel}")
+    else:
+        bad(f"submodule 自检项缺失或路径不对：期望数据行以 {line} 开头")
+if "public/amtl:amtl/am-string.h" not in sh and "public/amtl/am-string.h" in sh:
+    bad("AMTL 路径少了一层：应为 public/amtl/amtl/am-string.h"
+        "（public/amtl 是 submodule，其仓库内还有一层 amtl/）")
+
+# heredoc 是纯数据，行内注释会被当成数据的一部分
+for raw in re.findall(r"<<'([A-Z_]+)'\n(.*?)\n\1", sh, re.S):
+    body = raw[1]
+    for bline in body.splitlines():
+        if "#" in bline:
+            bad(f"heredoc 数据行含 '#'（会被当成数据）：{bline.strip()[:60]}")
+if not any("#" in b for _, b in re.findall(r"<<'([A-Z_]+)'\n(.*?)\n\1", sh, re.S)):
+    ok("heredoc 数据行不含行内注释")
+
 # 危险操作检查
 for danger, why in [("rm -rf /", "误删根目录"), ("rm -rf $SM_TREE", "误删源码树")]:
     if danger in sh:

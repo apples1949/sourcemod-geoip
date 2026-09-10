@@ -107,8 +107,9 @@ jobs:
           repository: alliedmodders/sourcemod
           ref: ${{ matrix.sm_branch }}
           path: sm
-          # submodule 必须拉取：public/amtl（am-string.h）、sourcepawn、versionlib、
-          # hl2sdk-manifests 等构建期依赖都在 submodule 里
+          # submodule 必须拉取：public/amtl（AMTL 头文件，其仓库内还有一层 amtl/）、
+          # sourcepawn（sourcepawn/include）、public/safetyhook、versionlib 等构建期依赖。
+          # 未拉取时 tools/build-geoip.sh 会在自检阶段直接报错，不会走到编译。
           submodules: recursive
 
       - name: Cache Metamod:Source

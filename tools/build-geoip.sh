@@ -74,12 +74,36 @@ DEPS_DIR="$(abs_dir "${DEPS_DIR:-$(dirname "$SM_TREE")/deps}")"
 
 [ -d "$SRC_DIR" ] || die "找不到扩展源码目录: $SRC_DIR"
 
-# --- 构建期自检：这些文件缺失会导致扩展带上错误的版本信息（甚至加载失败） ---------
+# --- 构建期自检 ----------------------------------------------------------------
+# 尽早失败：这些文件缺失会导致难以定位的构建错误，甚至产出信息错误的扩展。
+
+# 1) SourceMod 自身的关键文件
 [ -f "$SM_TREE/product.version" ] || die "SourceMod 源码树缺少 product.version: $SM_TREE"
+# version.rc / GetExtensionVerString() 依赖构建期生成的 sourcemod_version.h，
+# 而该文件（位于 public/）由 versionlib 在构建时改写，源码树里带的是模板。
 [ -f "$SM_TREE/public/smsdk_ext.cpp" ] || die "SourceMod 源码树缺少 public/smsdk_ext.cpp（submodule 未拉取？）"
-if [ ! -f "$SM_TREE/public/amtl/am-string.h" ]; then
-  die "SourceMod 源码树缺少 public/amtl（submodule 未拉取？请用 --recurse-submodules clone）"
-fi
+
+# 2) submodule 是否真的检出内容
+#    .gitmodules 里声明的 path -> 一处用于确认的关键文件
+#    （注意 public/amtl 是指向 alliedmodders/amtl 的 submodule，而 AMTL 仓库里还有一层
+#      amtl/ 目录，头文件实际在 public/amtl/amtl/ —— AMBuildScript 的 include 路径同样如此）
+#    用进程替换而非管道：管道里的 while 在子 shell 中运行，die 只会退出子 shell。
+#    下面 heredoc 是纯数据（引号形式不做展开），因此不能写行内注释。
+while IFS=: read -r dir probe label; do
+  [ -n "$dir" ] || continue
+  if [ -f "$SM_TREE/$dir/$probe" ]; then
+    echo "[ok] $label 已就绪"
+  elif [ -d "$SM_TREE/$dir" ] && [ "$(find "$SM_TREE/$dir" -type f 2>/dev/null | wc -l)" -eq 0 ]; then
+    die "$label 为空：submodule 未拉取。请用 --recurse-submodules 克隆，或执行 git -C \"$SM_TREE\" submodule update --init --recursive"
+  else
+    die "$label 缺少 $dir/$probe —— 源码树结构不符合预期（submodule 版本不对？）"
+  fi
+done < <(cat <<'SUBMODULES'
+public/amtl:amtl/am-string.h:AMTL（public/amtl）
+sourcepawn:include/sp_vm_api.h:SourcePawn（sourcepawn）
+public/safetyhook:include/safetyhook.hpp:SafetyHook（public/safetyhook）
+SUBMODULES
+)
 
 if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
 command -v "$PY" >/dev/null 2>&1 || die "找不到 python3"
