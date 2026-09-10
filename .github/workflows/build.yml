@@ -352,40 +352,23 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
+          # 清掉可能的旧产物，避免上传到过期/无效的归档
+          rm -f dist/*.zip dist/*.zip.sha256
           NAME="geoip-ext-${{ matrix.sm_branch }}-${{ matrix.os_short }}"
           ZIP="$GITHUB_WORKSPACE/dist/$NAME.zip"
 
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            # 直接用 tar 传 "D:/.../x.zip" 会失败：
-            #   tar: Cannot connect to D: resolve failed
-            # 因为 GNU tar 把归档名里的冒号当成「远程主机:路径」语法。
-            # --force-local 就是为此设计的。
-            # 这里不再提供"相对路径"后备分支：那条路径万一走到，可能静默产出
-            # 结构不对的归档（多一层目录），比起失败更难查。Git for Windows 自带
-            # GNU tar，所以直接要求它，缺了就明确报错。
-            tar --version 2>/dev/null | grep -qi 'GNU tar' \
-              || { echo "::error::需要 GNU tar（以支持 --force-local）"; tar --version; exit 1; }
-            ( cd out/package && tar --force-local -a -c -f "$ZIP" addons )
-          else
-            ( cd out/package && zip -r9 "$ZIP" addons )
-          fi
+          # 打包：统一用 Python 的 zipfile。
+          # 不用 tar 的原因：Git for Windows 带的是 **GNU tar，不支持 zip** ——
+          # `tar -a -c -f x.zip` 会静默产出 tar 归档（实测文件头是 "addons/" 而非 PK，
+          # file(1) 判为 POSIX tar archive），随后校验报 BadZipFile；
+          # 而且归档名里的 "D:" 还会被 tar 当成「远程主机:路径」。
+          # 这里刻意用单行 python -c（不用 heredoc）：heredoc 在多行 YAML 里对缩进
+          # 很敏感，容易写出坏脚本。
+          python -c "import os,sys,zipfile;root='out/package';z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED);[z.write(os.path.join(dp,fn),os.path.relpath(os.path.join(dp,fn),root).replace(os.sep,'/')) for dp,dn,fns in os.walk(root) for fn in sorted(fns)];z.close();print('wrote',sys.argv[1],os.path.getsize(sys.argv[1]),'bytes')" "$ZIP"
 
           [ -f "$ZIP" ] || { echo "::error::打包失败，未生成 $ZIP"; exit 1; }
-          # 确认归档里确实是被要求的目录结构（addons/... 而不是 package/addons/...）。
-          # 用 python 的 zipfile（各平台都有），不依赖 unzip。
-          # 注意 heredoc 的结束标记必须与 python - 同缩进，内容不能顶格（会破坏 YAML）。
-          python - "$ZIP" <<'PYEOF'
-          import sys, zipfile
-          z = zipfile.ZipFile(sys.argv[1])
-          names = z.namelist()
-          print('\n'.join(names[:8]))
-          want = [n for n in names if n.startswith('addons/sourcemod/extensions/geoip.ext.')]
-          if not want:
-              sys.exit('error: %s 内缺少 addons/sourcemod/extensions/geoip.ext.*' % sys.argv[1])
-          if any(n.startswith('package/') for n in names):
-              sys.exit('error: 归档内多了一层 package/ 目录')
-          print('ok: 目录结构正确 ->', want[0])
-          PYEOF
+          # 确认归档是合法 zip、且目录结构正确（addons/... 而非 package/addons/...）
+          python -c "import sys,zipfile;ns=zipfile.ZipFile(sys.argv[1]).namelist();print('\n'.join(ns[:8]));w=[n for n in ns if n.startswith('addons/sourcemod/extensions/geoip.ext.')];sys.exit('error: 缺少 addons/sourcemod/extensions/geoip.ext.*') if not w else None;sys.exit('error: 归档内多了一层 package/ 目录') if any(n.startswith('package/') for n in ns) else None;print('ok: 合法 zip，目录结构正确 ->',w[0])" "$ZIP"
           ls -lh dist
 
           # 校验和：优先 sha256sum / shasum，都没有就用 python 兜底

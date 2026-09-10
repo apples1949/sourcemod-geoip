@@ -381,20 +381,27 @@ try:
         else:
             bad("未上传构建产物")
 
-        # Windows 上用 tar 打包时，归档名里的盘符冒号会被 GNU tar 当成
-        # 「远程主机:路径」（tar: Cannot connect to D: resolve failed）。
-        # 必须加 --force-local（或改用相对路径）。
+        # Windows 上不能用 tar 打 zip：Git for Windows 带的是 GNU tar，不支持 zip，
+        # `tar -a -c -f x.zip` 会静默产出 tar 归档（实测文件头是 "addons/" 而非 PK），
+        # 随后校验报 BadZipFile；而且归档名里的 "D:" 还会被当成「远程主机:路径」。
         pkg = next((s for s in steps if s.get("name") == "Package extension"), None)
         if pkg:
             pkg_run = str(pkg.get("run", ""))
-            if "tar " in pkg_run and "Windows" in pkg_run:
-                if "--force-local" in pkg_run:
-                    ok("Windows 打包用 tar --force-local（避免盘符冒号被当成远程主机）")
-                else:
-                    bad("Windows 打包用 tar 但未加 --force-local —— "
-                        "归档路径含 'D:' 会报 Cannot connect to D: resolve failed")
-            if "Windows" not in pkg_run and "tar" in pkg_run:
-                wrn("打包步骤使用 tar 但未区分平台")
+            pkg_code = "\n".join(ln for ln in pkg_run.splitlines()
+                                 if not ln.lstrip().startswith("#"))
+            if re.search(r"tar\b[^\n]*\s-a\s[^\n]*\.zip", pkg_code):
+                bad("打包用 tar -a 生成 .zip：Git for Windows 的 GNU tar 不支持 zip，"
+                    "会静默产出 tar 归档（应改用 python zipfile）")
+            elif "zipfile" in pkg_code:
+                ok("打包用 python zipfile 生成 zip（跨平台一致，不受 tar 限制）")
+            elif "zip " in pkg_code:
+                ok("打包用 zip 命令")
+            else:
+                wrn("未识别打包方式，请确认能产出真正的 zip")
+            if "is_zipfile" in pkg_code or "ZipFile(sys.argv[1]" in pkg_code:
+                ok("打包后校验归档确实是合法 zip")
+            else:
+                wrn("未校验归档是否为合法 zip（tar -a 的病态产物会漏过）")
 
         # 产物校验必须区分 ELF / PE，且不能弱到形同虚设 ---
         if "ELF 32-bit LSB shared object" in runs:

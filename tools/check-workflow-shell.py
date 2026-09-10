@@ -102,6 +102,9 @@ def main():
                 label = step.get("name") or step.get("uses") or "step%d" % idx
                 # GitHub 表达式换成占位符：整行删除会打断 if/else 之类的控制流
                 cleaned = re.sub(r"\$\{\{[^}]*\}\}", "PLACEHOLDER", run)
+                # 说明：yaml.safe_load 已按块标量剥离 YAML 缩进，run 文本里的缩进
+                # 就是 shell 自身的缩进，可直接交给 bash -n。这里不做额外 dedent ——
+                # 大多数行从第 0 列开始，dedent 实际是空操作。
 
                 if shell.startswith("pwsh") or shell.startswith("powershell"):
                     if pwsh is None:
