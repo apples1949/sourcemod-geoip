@@ -157,8 +157,27 @@ echo "[py] 使用解释器: $PY"
 # 很难从表面看出是"没加载 VS 开发者环境"。这里提前给出明确指引。
 case "$(uname -s 2>/dev/null || echo unknown)" in
   MINGW*|MSYS*|CYGWIN*)
+    # 把 CC/CXX 的取值打出来：AMBuild 的 detect_from_env() 会**优先**读它们，
+    # 若被设成空字符串，探测命令里的编译器名就会是空的，报错极难定位。
+    # （CI 上曾因 job 级 env 引用不存在的 matrix 键而变成空串。）
+    # 注意要用 ${CC+x} 判断"是否设置"，因为空串在 -n/-z 下与未设置难以区分，
+    # 会把"CC 为空"误判成"没设 CC"，从而给出错误指引。
+    cc_set=0; cxx_set=0
+    [ -n "${CC+x}" ] && cc_set=1
+    [ -n "${CXX+x}" ] && cxx_set=1
+    if [ "$cc_set" -eq 1 ] || [ "$cxx_set" -eq 1 ]; then
+      echo "[cc] CC='${CC-（未设）}' CXX='${CXX-（未设）}'（已设置: CC=$cc_set CXX=$cxx_set）"
+      if [ "$cc_set" -eq 1 ] && [ -z "$CC" ] || [ "$cxx_set" -eq 1 ] && [ -z "$CXX" ]; then
+        die "CC/CXX 被设置成了空字符串。AMBuild 的 detect_from_env() 会优先采用它们，\
+空值会导致 'Unable to find a suitable C compiler'（探测命令里编译器名是空的）。
+Windows 上请**不要**设置 CC/CXX，交由 AMBuild 自动探测 MSVC。"
+      fi
+    fi
+
     if command -v cl >/dev/null 2>&1 || command -v clang-cl >/dev/null 2>&1; then
       echo "[cc] MSVC 编译器: $(command -v cl 2>/dev/null || command -v clang-cl)"
+    elif [ "$cc_set" -eq 1 ]; then
+      echo "[cc] 未找到 cl/clang-cl，将按 CC='$CC' 尝试"
     else
       die "Windows 上 PATH 里找不到 cl.exe：需要先加载 VS 开发者环境。\
 请先执行 vcvarsall.bat x86（目标架构是 32 位），例如：

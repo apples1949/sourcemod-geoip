@@ -63,9 +63,12 @@ jobs:
             sm_branch: '1.12-dev'
             ext: dll
 
-    env:
-      CC: ${{ matrix.cc }}
-      CXX: ${{ matrix.cxx }}
+    # 注意：这里**不能**放 job 级 CC/CXX（例如 CC: ${{ matrix.cc }}）。
+    # Windows 条目没有 cc/cxx 键，表达式会渲染成**空字符串**，而 AMBuild 的
+    # detect_from_env() 会优先读 CC/CXX —— 拿到空值就得到空编译器名，报
+    # "Unable to find a suitable C compiler"（日志里探测命令是 ['test.c', ...]，
+    # 编译器名是空的，正是此因；MSVC 环境其实已加载成功）。
+    # 因此 CC/CXX 只在 Linux 的构建步骤上按需设置，Windows 完全不设。
 
     steps:
       - name: Checkout extension source
@@ -266,6 +269,10 @@ jobs:
 
       - name: Build GeoIP extension
         shell: bash
+        # Linux 在此显式指定 clang；Windows 刻意不设 CC/CXX，交由 AMBuild 探测 MSVC
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
         # 脚本会：核验 PR #2335 中文修复 -> 同步扩展源码 -> 裁剪构建列表为只构建 geoip
         #        -> 克隆 Metamod:Source（正确分支）+ mock SDK
         #        -> configure.py --sdks=present --no-mysql --targets=x86 -> ambuild

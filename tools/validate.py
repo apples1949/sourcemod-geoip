@@ -229,6 +229,25 @@ try:
             ok("Linux 使用 clang-14（与 SourceMod 官方 PR 检查一致）")
         else:
             bad("未固定 Linux 的 clang-14")
+
+        # 致命陷阱：job 级 env 里 CC/CXX 引用 matrix 键。
+        # Windows 条目没有 cc/cxx 键 -> 渲染成**空字符串**；而 AMBuild 的
+        # detect_from_env() 优先读 CC/CXX，空值使探测命令里编译器名变空，
+        # 报 "Unable to find a suitable C compiler"（MSVC 其实已装好）。
+        job_env = build.get("env") or {}
+        for var in ("CC", "CXX"):
+            v = str(job_env.get(var, ""))
+            if v and "matrix." in v:
+                missing = [e.get("os_short") for e in
+                           (matrix.get("include") or [])
+                           if var.lower() not in e]
+                if missing:
+                    bad(f"job 级 env 的 {var} 引用了 {v}，但 {missing} 条目没有该键 "
+                        f"-> 会渲染成空字符串，AMBuild 会因空 CC/CXX 找不到编译器")
+                else:
+                    ok(f"job 级 {var} 引用 {v}，所有矩阵条目都有该键")
+            elif v:
+                ok(f"job 级 env 设了 {var}={v}")
         if "windows-2022" in str(matrix):
             ok("Windows 使用 windows-2022 runner（自带 MSVC）")
         else:
