@@ -261,19 +261,33 @@ sudo apt-get install -y clang-14 build-essential gcc-multilib g++-multilib \
 
 ```bash
 python3 ../configure.py \
-  --enable-optimize \   # -O3 / NDEBUG
+  --enable-optimize \          # -O3 / NDEBUG
   --no-color \
-  --sdks=none \         # GeoIP 不依赖任何 HL2SDK，避免拉取数 GB 的 SDK 仓库
-  --no-mysql \          # 不构建 MySQL 扩展，免去 MySQL 5.5 头文件依赖
-  --targets=x86 \       # 服务端为 32 位
+  --sdks=<见下> \               # 两代构建系统写法不同
+  --no-mysql \                 # 不构建 MySQL 扩展，免去 MySQL 5.5 头文件依赖
+  --targets=x86 \              # 服务端为 32 位
   --mms-path=<deps>/mmsource-1.12
 ambuild
 ```
 
-`--sdks=none` 是安全的：经逐个检查 `extensions/*/AMBuilder`，
-依赖 SDK 的扩展（`cstrike` / `sdkhooks` / `sdktools` / `tf2`）都被
-`if sdk_name not in SM.sdks: continue` 守卫，SDK 列表为空时自动跳过；
-而 **geoip 属于"不依赖 SDK、直接构建"的那一类**，所以不需要任何 HL2SDK。
+**SDK 参数必须按分支区分**，这是踩过的坑：
+
+| 分支 | 取值 | 原因 |
+| --- | --- | --- |
+| 1.11-dev | `none` | 该分支 `detectSDKs()` 把 `none` 当关键字，直接跳过所有 SDK |
+| 1.12-dev | `present` + 拉 mock SDK | 1.12 改成 manifest 驱动（`hl2sdk-manifests/SdkHelpers.ambuild`），**`none` 不再是关键字**，会被当作 SDK 名去找 `hl2sdk-none`，报 `Missing hl2sdks: none` |
+
+1.12 为什么用 `present` 而不是 `mock` 之类：
+
+- `present` 的语义是"有什么用什么"，缺失的 SDK 只打印警告。其它取值会走
+  `shouldRequireSdk()` → 缺失即 `raise`（`--sdks=none` 失败就是这个机制）。
+- 需要**至少一个**能构建的 SDK，否则会触发
+  `No buildable SDKs were found, nothing to build.`。`manifests/mock.json` 声明了
+  `"source2": false`，能通过 `shouldIncludeSdk` 过滤，于是 mock 被计入 `sdk_targets`。
+- mock SDK 只是让 SDK 解析满足前置条件；`geoip` 本身**不引用任何 SDK 头文件**，
+  也没有任何扩展会因为 mock 而多编译出东西。
+
+脚本按 `hl2sdk-manifests/SdkHelpers.ambuild` 是否存在自动选择，无需手工干预。
 
 ### PR #2335 修复的核验（`tools/build-geoip.sh` 第 0 步）
 
@@ -296,9 +310,12 @@ ambuild
 ### 其他两点硬性要求
 
 - **必须提供 Metamod:Source 源码**：`AMBuildScript` 的 `detectSDKs()` 会无条件校验
-  `mms_root`（core 的 SourceHook 头文件需要它），即使用 `--sdks=none` 也不例外。
+  `mms_root`（core 的 SourceHook 头文件需要它），即使不构建任何 HL2SDK 也不例外。
   各分支需要的版本不同（1.11-dev → `mmsource-1.10`，1.12-dev → `mmsource-1.12`），
-  脚本因此不写死版本号，而是用官方 `tools/checkout-deps.sh -s none` 拉取后按 glob 自动发现。
+  脚本因此不写死版本号，而是用官方 `tools/checkout-deps.sh` 拉取后按 glob 自动发现。
+- **`public/safetyhook` 只有 1.12 有**：1.11-dev 既没有这个目录，也不在
+  `AMBuildScript` 里引用它。自检因此对该目录单独豁免（存在才校验），
+  否则 1.11 会被误判为"源码树结构不符"。
 - **不能关闭自动版本号**：`version.rc` 与 `GetExtensionVerString()` 使用
   `SOURCEMOD_VERSION` / `SOURCEMOD_BUILD_TIME`，这些宏由构建期的 versionlib 生成。
 

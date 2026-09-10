@@ -283,12 +283,10 @@ sh_path = os.path.join(REPO, "tools", "build-geoip.sh")
 sh = open(sh_path, "r", encoding="utf-8").read()
 checks = [
     ("set -euo pipefail", "严格模式"),
-    ("--sdks=none", "不拉取 HL2SDK（GeoIP 不需要）"),
     ("--no-mysql", "不构建 MySQL 扩展"),
     ("--targets=\"$TARGET_ARCH\"", "目标架构参数"),
     ("--mms-path=", "提供 Metamod:Source 路径（detectSDKs 强制要求）"),
     ("checkout-deps.sh", "用官方脚本拉依赖"),
-    ("-s none", "checkout-deps 不拉 HL2SDK"),
     ("mmsource-*", "按 glob 自动发现 mmsource 版本"),
     ("extensions/geoip", "同步到源码树 extensions/geoip"),
     ("ambuild", "执行编译"),
@@ -300,6 +298,37 @@ for needle, why in checks:
         ok(f"{why} ({needle})")
     else:
         bad(f"脚本缺少 {why} ({needle})")
+
+# --- SDK 参数：两代构建系统写法不同，不能用固定值 ---
+# 1.11：--sdks=none 是关键字
+# 1.12：SDK 改为 manifest 驱动，none 会被当成 SDK 名去找 hl2sdk-none 而失败；
+#       正确做法是 --sdks=present 并提供一个 mock SDK（present 允许 SDK 缺失）
+if "hl2sdk-manifests/SdkHelpers.ambuild" in sh:
+    ok("按 manifest 系统存在与否选择 SDK 参数（1.11/1.12 差异已处理）")
+else:
+    bad("未检测 manifest 驱动的 SDK 系统 —— 1.12 上用 --sdks=none 会报 Missing hl2sdks: none")
+# 只针对 configure 命令行里的字面量写法（脚本里另有 1.11 分支赋值 SDK_ARG="none"，那是正确的）
+if re.search(r"^\s*--sdks=none\s*\\", sh, re.M):
+    bad("configure 里把 --sdks 写死为 none：1.12 会直接失败，应使用 $SDK_ARG")
+else:
+    ok("configure 未写死 --sdks=none，改用变量 $SDK_ARG")
+for var, val in [('SDK_ARG="present"', "1.12 用 present（缺失 SDK 只警告不报错）"),
+                 ('DEPS_SDKS="mock"', "1.12 拉取 mock SDK（保证 sdk_targets 非空）"),
+                 ('SDK_ARG="none"', "1.11 用 none（该分支识别此关键字）")]:
+    if var in sh:
+        ok(f"{val}")
+    else:
+        bad(f"缺少 {val}（期望出现 {var}）")
+if 'checkout-deps.sh" -s "$DEPS_SDKS"' in sh:
+    ok("依赖脚本用 $DEPS_SDKS（与 configure 的 SDK 策略一致）")
+else:
+    bad("checkout-deps.sh 未使用 $DEPS_SDKS，可能与 configure 的 SDK 策略不一致")
+
+# --- public/safetyhook 是 1.12 才有的 submodule，1.11 必须豁免 ---
+if '[ ! -d "$SM_TREE/$dir" ]' in sh or "! -d" in sh:
+    ok("submodule 自检对分支缺失的目录有豁免（safetyhook 仅 1.12 存在）")
+else:
+    bad("submodule 自检未豁免分支缺失的目录 —— 1.11 会被误判为结构不符")
 
 # bash 语法检查（有 bash 就真跑一遍 bash -n，比数括号可靠）
 import shutil

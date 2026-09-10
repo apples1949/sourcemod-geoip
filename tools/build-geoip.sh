@@ -85,8 +85,11 @@ DEPS_DIR="$(abs_dir "${DEPS_DIR:-$(dirname "$SM_TREE")/deps}")"
 
 # 2) submodule 是否真的检出内容
 #    .gitmodules 里声明的 path -> 一处用于确认的关键文件
-#    （注意 public/amtl 是指向 alliedmodders/amtl 的 submodule，而 AMTL 仓库里还有一层
-#      amtl/ 目录，头文件实际在 public/amtl/amtl/ —— AMBuildScript 的 include 路径同样如此）
+#    注意两点：
+#    a) public/amtl 是指向 alliedmodders/amtl 的 submodule，而 AMTL 仓库里还有一层
+#       amtl/ 目录，头文件实际在 public/amtl/amtl/ —— AMBuildScript 的 include 路径同样如此
+#    b) public/safetyhook 是 **1.12 才有的** submodule（1.11 既没有该目录也不引用它），
+#       所以只有目录存在时才校验，否则 1.11 会被误判为"结构不符"
 #    用进程替换而非管道：管道里的 while 在子 shell 中运行，die 只会退出子 shell。
 #    下面 heredoc 是纯数据（引号形式不做展开），因此不能写行内注释。
 while IFS=: read -r dir probe label; do
@@ -95,6 +98,9 @@ while IFS=: read -r dir probe label; do
     echo "[ok] $label 已就绪"
   elif [ -d "$SM_TREE/$dir" ] && [ "$(find "$SM_TREE/$dir" -type f 2>/dev/null | wc -l)" -eq 0 ]; then
     die "$label 为空：submodule 未拉取。请用 --recurse-submodules 克隆，或执行 git -C \"$SM_TREE\" submodule update --init --recursive"
+  elif [ "$dir" = "public/safetyhook" ] && [ ! -d "$SM_TREE/$dir" ]; then
+    # 该分支根本没有这个 submodule（1.11 及更早），属正常
+    echo "[ok] $label 在该分支不存在，跳过"
   else
     die "$label 缺少 $dir/$probe —— 源码树结构不符合预期（submodule 版本不对？）"
   fi
@@ -104,6 +110,28 @@ sourcepawn:include/sp_vm_api.h:SourcePawn（sourcepawn）
 public/safetyhook:include/safetyhook.hpp:SafetyHook（public/safetyhook）
 SUBMODULES
 )
+
+# 3) SDK 目标：GeoIP 不依赖任何 HL2SDK，但两代构建系统对"不构建 SDK"的写法不同
+#    1.11：--sdks=none 是关键字，直接跳过所有 SDK，且 len(sdks)<1 时不报错
+#    1.12：SDK 改为 manifest 驱动（根 AMBuildScript 用 builder.Eval 加载
+#          hl2sdk-manifests/SdkHelpers.ambuild），"none" 不再是关键字，
+#          会被当成 SDK 名去找 hl2sdk-none，报 "Missing hl2sdks: none"
+#
+#    1.12 的解法是 --sdks=present + 提供一个 mock SDK：
+#      - present 语义是"有什么用什么"：缺失的 SDK 只警告，不报错
+#        （非 present 时会进 shouldRequireSdk -> 缺失即 raise，这正是 none 失败的原因）
+#      - manifests/mock.json 声明 "source2": false，能通过 shouldIncludeSdk 过滤，
+#        于是 mock 被找到并计入 sdk_targets，避免 "No buildable SDKs were found"
+#      - 有 mock 在场后，SDK 相关扩展按 mock 的平台/架构正常跳过，GeoIP 照常构建
+if [ -f "$SM_TREE/hl2sdk-manifests/SdkHelpers.ambuild" ]; then
+  SDK_ARG="present"
+  DEPS_SDKS="mock"
+  echo "[sdk] 检测到 manifest 驱动的 SDK 系统（1.12+）：--sdks=present + mock SDK"
+else
+  SDK_ARG="none"
+  DEPS_SDKS="none"
+  echo "[sdk] 检测到旧的 SDK 系统（<=1.11）：--sdks=none"
+fi
 
 if command -v python3 >/dev/null 2>&1; then PY=python3; else PY=python; fi
 command -v "$PY" >/dev/null 2>&1 || die "找不到 python3"
@@ -160,6 +188,7 @@ info "SourceMod 源码树 : $SM_TREE"
 info "扩展源码         : $SRC_DIR"
 info "依赖目录         : $DEPS_DIR"
 info "目标架构         : $TARGET_ARCH"
+info "SDK 参数         : --sdks=$SDK_ARG"
 info "产物目录         : $OUT_DIR"
 
 # --- 1. 把扩展源码同步进 SourceMod 源码树 --------------------------------------
@@ -168,20 +197,20 @@ rm -rf "$SM_TREE/extensions/geoip"
 cp -a "$SRC_DIR" "$SM_TREE/extensions/geoip"
 echo "[ok] 已同步扩展源码 -> $SM_TREE/extensions/geoip"
 
-# --- 2. 依赖：Metamod:Source ---------------------------------------------------
+# --- 2. 依赖：Metamod:Source（+ mock SDK）--------------------------------------
 # 注意: SourceMod 的 AMBuildScript 在 detectSDKs() 里无条件要求一个 Metamod:Source 源码副本
-#       （用于 core 的 SourceHook 头文件），即使 --sdks=none 也一样。用官方脚本拉取。
+#       （用于 core 的 SourceHook 头文件），即使不构建任何 HL2SDK 也一样。用官方脚本拉取。
 if [ "$SKIP_DEPS" -eq 0 ]; then
   mkdir -p "$DEPS_DIR"
-  if [ ! -d "$SM_TREE/tools/checkout-deps.sh" ] && [ ! -f "$SM_TREE/tools/checkout-deps.sh" ]; then
+  if [ ! -f "$SM_TREE/tools/checkout-deps.sh" ]; then
     die "SourceMod 源码树缺少 tools/checkout-deps.sh，无法拉取依赖（可加 --skip-deps 自行准备）"
   fi
-  info "拉取 Metamod:Source（官方 tools/checkout-deps.sh，-s none 表示不拉 HL2SDK）"
+  info "拉取依赖（官方 tools/checkout-deps.sh -s $DEPS_SDKS；mock 会顺带 clone hl2sdk-mock）"
   # checkout-deps.sh 要求当前目录是源码树之外的同级目录（它会写入 sourcemod/ 作为占位）
   (
     cd "$DEPS_DIR"
     mkdir -p sourcemod
-    bash "$SM_TREE/tools/checkout-deps.sh" -s none
+    bash "$SM_TREE/tools/checkout-deps.sh" -s "$DEPS_SDKS"
   )
 else
   info "按 --skip-deps 跳过依赖拉取"
@@ -208,13 +237,23 @@ echo "[ok] Metamod:Source -> $MMS_PATH"
 # --targets   : SourceMod 服务端为 32 位
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
+
+# 诊断信息：1.12 的 SDK 解析依赖 deps 目录里实际存在哪些 hl2sdk-*，
+# 出问题时这段日志能直接说明"库里有什么"。
+if [ -d "$DEPS_DIR" ]; then
+  echo "[deps] $DEPS_DIR 内容:"
+  find "$DEPS_DIR" -maxdepth 1 -mindepth 1 -type d -printf '  %f\n' 2>/dev/null | sort || \
+    ls -1 "$DEPS_DIR" | sed 's/^/  /'
+fi
+
 info "configure"
+echo "[cmd] configure.py --enable-optimize --no-color --sdks=$SDK_ARG --no-mysql --targets=$TARGET_ARCH --mms-path=$MMS_PATH"
 (
   cd "$BUILD_DIR"
   "$PY" ../configure.py \
     --enable-optimize \
     --no-color \
-    --sdks=none \
+    "--sdks=$SDK_ARG" \
     --no-mysql \
     --targets="$TARGET_ARCH" \
     "--mms-path=$MMS_PATH"
