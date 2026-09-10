@@ -262,10 +262,10 @@ restore_amb() {
 }
 trap 'restore_amb' EXIT
 
-if ! "$PY" "$REPO_ROOT/tools/filter-build-scripts.py" "$AMB_FILE" --keep geoip; then
+if ! "$PY" "$REPO_ROOT/tools/filter-build-scripts.py" "$AMB_FILE"; then
   die "裁剪构建列表失败，已中止（不会产出只含 geoip 的构建）"
 fi
-echo "[only] 已裁剪 AMBuildScript：仅构建 geoip 扩展"
+echo "[only] 已裁剪构建列表：只编译 geoip 所需部件（AMTL + versionlib + geoip）"
 
 # --- 2. 依赖：Metamod:Source + 一个可用的 SDK 目录 ------------------------------
 # 两个硬性前提（只构建 geoip 也不可省）：
@@ -419,19 +419,29 @@ info "ambuild"
 restore_amb
 echo "[only] 已还原 $AMB_FILE"
 
-mapfile -t built < <(find "$BUILD_DIR/package" -type f -name 'geoip.ext.so' | sort)
-[ "${#built[@]}" -gt 0 ] || die "构建结束但没找到 geoip.ext.so（构建是否失败或被跳过？）"
+# 扩展名按平台不同（Linux .so / Windows .dll）。
+# 优先在 build/package 里找；由于已裁剪掉 loader/core/plugins 与打包脚本，
+# 包目录可能不存在，因此退化为在整个构建树里搜（扩展产物位于
+# build/extensions/geoip/geoip.ext/<platform>-<arch>/ 下）。
+EXT_NAME="geoip.ext.so"
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*) EXT_NAME="geoip.ext.dll" ;;
+esac
+
+mapfile -t built < <(find "$BUILD_DIR" -type f -name "$EXT_NAME" 2>/dev/null | sort)
+[ "${#built[@]}" -gt 0 ] \
+  || die "构建结束但没找到 $EXT_NAME（构建是否失败或被跳过？请检查上面的 ambuild 输出）"
 
 BIN="${built[0]}"
 if [ "${#built[@]}" -gt 1 ]; then
   # 多架构时优先取 32 位（服务端使用的架构）
-  for f in "${built[@]}"; do case "$f" in *x86/geoip.ext.so) BIN="$f" ;; esac; done
+  for f in "${built[@]}"; do case "$f" in *x86/$EXT_NAME) BIN="$f" ;; esac; done
 fi
 
 mkdir -p "$OUT_DIR/package/addons/sourcemod/extensions"
-cp -f "$BIN" "$OUT_DIR/package/addons/sourcemod/extensions/geoip.ext.so"
+cp -f "$BIN" "$OUT_DIR/package/addons/sourcemod/extensions/$EXT_NAME"
 printf '%s\n' "$SM_TREE" > "$OUT_DIR/package/BUILD_SOURCEMOD_TREE.txt"
 
 echo "[ok] 二进制 -> $BIN"
-echo "[ok] 已复制 -> $OUT_DIR/package/addons/sourcemod/extensions/geoip.ext.so"
+echo "[ok] 已复制 -> $OUT_DIR/package/addons/sourcemod/extensions/$EXT_NAME"
 info "完成"

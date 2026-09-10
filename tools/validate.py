@@ -515,14 +515,10 @@ else:
     ok("未执行 checkout-deps.sh（仅解析版本号），避免取错分支与多余下载")
 
 # --- 只构建 geoip：整棵树全量构建会连带编译 regex 等扩展并因缺依赖失败 ---
-if "filter-build-scripts.py" in sh:
+if "filter-build-scripts.py" in sh and '"$AMB_FILE"' in sh:
     ok("调用 filter-build-scripts.py 裁剪构建列表")
 else:
-    bad("未裁剪构建列表：会全量编译源码树的所有扩展（regex 等会因缺依赖而失败）")
-if "--keep geoip" in sh:
-    ok("裁剪时保留 geoip 扩展")
-else:
-    bad("裁剪未指定 --keep geoip")
+    bad("未裁剪构建列表：会全量编译源码树（core 需真实 HL2SDK，mock 下必然失败）")
 if "restore_amb" in sh and "trap 'restore_amb' EXIT" in sh:
     ok("构建后（含失败/中断）还原 AMBuildScript（trap EXIT）")
 else:
@@ -531,16 +527,24 @@ else:
 filter_py = os.path.join(REPO, "tools", "filter-build-scripts.py")
 if os.path.isfile(filter_py):
     fp_src = open(filter_py, "r", encoding="utf-8").read()
-    if "extensions/" in fp_src and "AMBuilder" in fp_src:
-        ok("filter-build-scripts.py 定位 extensions/*/AMBuilder 行")
+    # 裁剪目标：只保留 geoip 真正依赖的部件（AMTL / versionlib / geoip 扩展）
+    if "AMBuilder" in fp_src and "ENTRY" in fp_src:
+        ok("filter-build-scripts.py 定位构建列表条目")
     else:
-        bad("filter-build-scripts.py 未匹配 extensions/*/AMBuilder")
-    for guard, why in [("extensions/*/AMBuilder 行，结构可能已变", "找不到目标行时报错"),
-                       ("找不到 keep 指定的扩展", "保留的扩展缺失时报错")]:
+        bad("filter-build-scripts.py 未匹配构建列表条目")
+    for guard, why in [("列表条目，结构可能已变", "找不到目标行时报错"),
+                       ("缺少必须保留的构建项", "保留项缺失时报错"),
+                       ("未找到 AMTL 的构建语句", "AMTL 构建语句缺失时报错")]:
         if guard in fp_src:
             ok(f"filter 脚本具备保护：{why}")
         else:
             bad(f"filter 脚本缺少保护：{why}")
+    # core 必须排除：它需要真实 HL2SDK，mock 的占位头文件编译不过
+    # （HalfLife2.cpp: 'CUtlVector': too many template arguments）
+    if "builder.Build(" in fp_src and "core" not in fp_src.split("KEEP = {")[1].split("}")[0]:
+        ok("filter 不保留 core（core 需真实 HL2SDK，mock 无法编译）")
+    else:
+        bad("filter 可能仍保留 core —— 会用 mock SDK 编译 core 而失败")
 else:
     bad("缺少 tools/filter-build-scripts.py")
 

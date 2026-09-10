@@ -150,7 +150,7 @@ public void OnClientPostAdminCheck(int client)
 │   └── geoip_fix_2335.patch      # 中文语言码修复补丁（构建时核验/回填）
 ├── tools/
 │   ├── build-geoip.sh            # 构建脚本（CI 与本地共用）
-│   ├── filter-build-scripts.py   # 裁剪 AMBuildScript：只构建 geoip 扩展
+│   ├── filter-build-scripts.py   # 裁剪构建列表：只编译 geoip 所需部件
 │   ├── check-workflow-shell.py   # 对工作流每个 run: 做 bash -n / PowerShell AST 语法检查
 │   ├── sync-upstream.py          # 同步上游源码（带 git blob SHA 校验）
 │   └── validate.py               # 仓库自检
@@ -311,25 +311,41 @@ CompilerNotFoundException: Unable to find a suitable C compiler
 > 但在本仓库的 runner 上下文里该镜像拿不到 `clang++`（容器内 PATH 找不到编译器，
 > 报 `clang++: command not found`）。改为显式安装后不再依赖任何第三方镜像。
 
-### 只构建 geoip（`tools/filter-build-scripts.py`）
+### 只构建 geoip 所需部件（`tools/filter-build-scripts.py`）
 
-根 `AMBuildScript` 的 `BuildScripts` 会编译**整棵源码树的所有扩展**。这些扩展各有各的
-依赖，与 geoip 完全无关却会让构建失败 —— 实测 1.11 就死在：
-
-```
-extensions/regex/extension.cpp:34:10: fatal error: 'sh_string.h' file not found
-```
-
-因此编译前会把 `AMBuildScript` 里除 geoip 外的扩展移出构建列表（只改构建脚本，
-不动源码；`loader` / `core` / `core/logic` / `versionlib` / `plugins` 全部保留）：
+根 `AMBuildScript` 的 `BuildScripts` 会编译**整棵源码树**：`loader`、`core`、
+十几个扩展、以及打包脚本。这里全部裁掉，只保留 geoip 真正依赖的三项：
 
 ```
-[only] 已裁剪 AMBuildScript：仅构建 geoip 扩展
+libamtl = builder.Build('public/amtl/amtl/AMBuilder', extra_vars)   # AMTL 头文件
+'versionlib/AMBuilder',                                            # sourcemod_version.h
+'extensions/geoip/AMBuilder',                                      # 目标扩展
 ```
 
-这一步是安全的，因为 geoip 的 `AMBuilder` 只引用自身源码、`../../public/smsdk_ext.cpp`
-和 `public/` 头文件，**不依赖任何其它扩展**。脚本用 `trap ... EXIT` 保证构建结束
-（含失败或中断）后把 `AMBuildScript` 还原，不在源码树里留痕。
+（1.12 还会保留 `public/safetyhook/AMBuilder` —— 根脚本无条件构建它，且它只是个静态库。）
+
+**为什么必须裁掉 `core`**：`core` 需要**真实的 HL2SDK** 才能编译。
+`core/HalfLife2.cpp` 大量使用 `CUtlVector<T, A>` / `CUtlMemory` 等真正的 SDK 类型，
+而 mock SDK 的同名头文件只是占位实现：
+
+```cpp
+// hl2sdk-mock/public/tier1/utlvector.h —— 只有单个模板参数
+template <typename T> class CUtlVector { ... };
+```
+
+于是 MSVC 报：
+
+```
+HalfLife2.cpp(1310): error C2977: 'CUtlVector': too many template arguments
+```
+
+而 geoip **并不需要 core**：`AMBuildScript` 的 `ConfigureForExtension()` 给扩展的
+include 只有 `public/`、`public/extensions`、`sourcepawn/include`、`public/amtl`
+—— 里面**没有 core**。所以裁掉 core 后，mock SDK 仅用于满足 SDK 解析的前置条件，
+不会真的被用来编译任何代码。
+
+同时脚本会从**构建树**里直接收集产物（`find` 查找 `geoip.ext.so` / `.dll`），
+不再依赖打包脚本生成 `build/package`（打包脚本已被裁掉）。
 
 ### 编译参数
 
