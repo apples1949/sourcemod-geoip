@@ -1,6 +1,6 @@
 name: Build GeoIP Extension
 
-# 编译 SourceMod GeoIP 扩展，产出可用的 geoip.ext.so。
+# 编译 SourceMod GeoIP 扩展，产出可用的 geoip.ext.so（含 SourceMod PR #2335 中文修复）。
 #
 # 背景：GeoIP 是 SourceMod 的 in-tree 扩展（引用 SourceMod 自身构建系统与 public/ 头文件），
 # 无法脱离 SourceMod 源码树独立编译。因此本工作流按矩阵分别拉取 SourceMod 的
@@ -26,11 +26,10 @@ concurrency:
 jobs:
   build:
     name: SourceMod ${{ matrix.sm_branch }}
-    runs-on: ubuntu-latest
-
-    # 官方 SourceMod 构建容器（Debian + clang），环境与上游 CI 一致
-    container:
-      image: ghcr.io/alliedmodders/build-containers/debian11-clang22:latest
+    # 不用第三方构建镜像：工具链在本工作流里显式装好。
+    # 之前引用 ghcr.io 上的镜像时容器内没有 clang++（PATH 里找不到编译器），
+    # 换成标准 runner + apt 显式安装，行为确定、可复现。
+    runs-on: ubuntu-22.04
 
     strategy:
       fail-fast: false
@@ -39,9 +38,68 @@ jobs:
           - '1.11-dev'
           - '1.12-dev'
 
+    env:
+      # C 源码（maxminddb.c）走 clang，避免默认落到 gcc。
+      # 与 SourceMod 官方 PR 检查在 ubuntu-22.04 上使用的 clang-14 保持一致。
+      CC: clang-14
+      CXX: clang++-14
+
     steps:
       - name: Checkout extension source
         uses: actions/checkout@v4
+
+      # 全局 autocrlf=true 会让 git 在操作工作区时改动行尾，破坏与上游的逐字节比对。
+      # 本仓库靠 .gitattributes 精确控制行尾，这里显式关闭全局设置。
+      - name: Configure git line endings
+        shell: bash
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      # 依赖清单对齐 SourceMod 官方 PR 检查（sourcemod/.github/workflows/pr-checks.yml）：
+      # 目标是 x86，64 位宿主上必须有 i386 的 multilib 开发库，否则 32 位链接会失败。
+      - name: Install build toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture i386
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            clang-14 build-essential gcc-multilib g++-multilib \
+            libstdc++6 lib32stdc++6 libc6-dev libc6-dev-i386 \
+            linux-libc-dev linux-libc-dev:i386 lib32z1-dev \
+            patch zip file python3 python3-pip python3-venv
+
+          # AMBuild 装进独立 venv（ubuntu 的 python3 受 PEP 668 保护，不能直接装到系统环境）
+          python3 -m venv "$HOME/ambuild-venv"
+          "$HOME/ambuild-venv/bin/pip" install --quiet --upgrade pip setuptools wheel
+          "$HOME/ambuild-venv/bin/pip" install --quiet \
+            "git+https://github.com/alliedmodders/ambuild.git"
+
+          # PATH 必须在这里写入，后续步骤才拿得到（GITHUB_PATH 只对之后的步骤生效）
+          echo "$HOME/ambuild-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Verify toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "python3  : $(python3 --version)"
+          echo "clang++  : $(clang++ --version | head -n 1)"
+          echo "ambuild  : $(command -v ambuild || echo 缺失)"
+          echo "patch    : $(command -v patch)"
+          echo "zip      : $(command -v zip)"
+
+          # 缺任何一个都立刻失败，避免后面出现难懂的报错
+          for t in clang++ patch zip python3 ambuild; do
+            command -v "$t" >/dev/null 2>&1 || { echo "::error::工具链缺少 $t"; exit 1; }
+          done
+
+          # 确认能链接 32 位（SourceMod 服务端是 x86）
+          echo 'int main(){return 0;}' > /tmp/t32.c
+          clang++ -m32 /tmp/t32.c -o /tmp/t32 \
+            || { echo "::error::无法编译 32 位程序，缺少 multilib（i386）开发库"; exit 1; }
+          file /tmp/t32
+          echo "ok: 32 位工具链可用"
 
       - name: Checkout SourceMod (${{ matrix.sm_branch }})
         uses: actions/checkout@v4
@@ -57,23 +115,20 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps
-          key: deps-${{ matrix.sm_branch }}-${{ hashFiles(format('sm/tools/checkout-deps.sh')) }}
+          key: deps-${{ matrix.sm_branch }}-${{ hashFiles('sm/tools/checkout-deps.sh') }}
           restore-keys: |
             deps-${{ matrix.sm_branch }}-
 
-      - name: Show toolchain
+      - name: Show SourceMod revision
         shell: bash
         run: |
-          python3 --version
-          clang++ --version | head -n 1
           echo "SourceMod product.version: $(tr -d '\n' < sm/product.version)"
-          # patch(1) 用于在源码缺少 PR #2335 修复时回填（正常路径用不到，但保证可用）
-          command -v patch >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq patch; }
-          echo "patch: $(command -v patch || echo '缺失')"
+          git -C sm log -1 --format='commit %h  %ad  %s' --date=short
 
       - name: Build GeoIP extension
         shell: bash
-        # 脚本会：同步扩展源码 -> tools/checkout-deps.sh 拉 Metamod:Source
+        # 脚本会：核验 PR #2335 中文修复 -> 同步扩展源码
+        #        -> checkout-deps.sh 拉 Metamod:Source
         #        -> configure.py --sdks=none --no-mysql --targets=x86 -> ambuild
         run: |
           chmod +x tools/build-geoip.sh
@@ -86,21 +141,39 @@ jobs:
           SO="out/package/addons/sourcemod/extensions/geoip.ext.so"
           [ -f "$SO" ] || { echo "::error::$SO 不存在，构建未产出二进制"; exit 1; }
           echo "size : $(stat -c%s "$SO") bytes"
-          file "$SO" || true
+          file "$SO"
 
-          # 32 位 ELF 共享对象（SourceMod 服务端架构为 x86）
-          if ! head -c 20 "$SO" | od -An -tx1 | tr -d ' \n' | grep -qi '^7f454c46'; then
+          # ELF 魔数
+          if ! head -c 4 "$SO" | od -An -tx1 | tr -d ' \n' | grep -qi '^7f454c46'; then
             echo "::error::$SO 不是 ELF 文件"; exit 1
           fi
+          # 32 位 ELF 共享对象（SourceMod 服务端架构为 x86）
           if ! file "$SO" | grep -q 'ELF 32-bit LSB shared object'; then
             echo "::error::$SO 不是 32 位 ELF 共享对象（--targets 是否被覆盖？）"; exit 1
           fi
-
-          # 确认扩展元信息已编入二进制（SMEXT_CONF_NAME "GeoIP"）
+          # 扩展元信息（SMEXT_CONF_NAME "GeoIP"）
           if ! grep -aq 'GeoIP' "$SO"; then
             echo "::error::二进制中未找到 GeoIP 标识，产物可能无效"; exit 1
           fi
           echo "ok: 32 位 ELF 共享对象，且包含 GeoIP 标识"
+
+      - name: Verify PR #2335 Chinese fix is compiled in
+        shell: bash
+        # 本仓库的存在意义就是带上这个修复：产物必须能证明它确实被编进去了
+        run: |
+          set -euo pipefail
+          echo "--- 构建所用源码中的修复 ---"
+          grep -n 'strcmp(code, "chi")' sm/extensions/geoip/geoip_util.cpp \
+            || { echo "::error::构建用的源码缺少 PR #2335 修复"; exit 1; }
+          grep -n 'code = "zh-CN";' sm/extensions/geoip/geoip_util.cpp \
+            || { echo "::error::构建用的源码缺少 zh-CN 归一化赋值"; exit 1; }
+
+          echo "--- 产物中的字符串 ---"
+          if grep -aq 'zh-CN' out/package/addons/sourcemod/extensions/geoip.ext.so; then
+            echo "ok: 二进制内含 zh-CN（修复已编入）"
+          else
+            echo "::error::二进制内未找到 zh-CN，中文修复可能没被编进去"; exit 1
+          fi
 
       - name: Package extension
         shell: bash
@@ -117,3 +190,19 @@ jobs:
           path: dist/geoip-ext-${{ matrix.sm_branch }}.zip
           if-no-files-found: error
           retention-days: 30
+
+      - name: Build summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### GeoIP / SourceMod ${{ matrix.sm_branch }}"
+            echo
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| runner | ubuntu-22.04 |"
+            echo "| python | $(python3 --version 2>&1) |"
+            echo "| clang | $(clang++ --version 2>/dev/null | head -n 1 || echo 'n/a') |"
+            echo "| SourceMod | $(tr -d '\n' < sm/product.version 2>/dev/null || echo 'n/a') |"
+            echo "| PR #2335 修复标记 | $(grep -c 'strcmp(code, "chi")' sm/extensions/geoip/geoip_util.cpp 2>/dev/null || echo 0) |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -222,9 +222,42 @@ $ git hash-object extensions/geoip/maxminddb.c
 
 ## 编译细节
 
-工作流在 SourceMod 官方构建容器
-`ghcr.io/alliedmodders/build-containers/debian11-clang22` 中执行，
-使用与上游一致的编译参数：
+### 构建环境
+
+工作流跑在标准 runner `ubuntu-22.04` 上，工具链在 workflow 里显式安装：
+
+```yaml
+env:
+  CC: clang-14
+  CXX: clang++-14
+```
+
+```bash
+sudo dpkg --add-architecture i386
+sudo apt-get install -y clang-14 build-essential gcc-multilib g++-multilib \
+  libstdc++6 lib32stdc++6 libc6-dev libc6-dev-i386 \
+  linux-libc-dev linux-libc-dev:i386 lib32z1-dev \
+  patch zip file python3 python3-pip python3-venv
+```
+
+依赖清单与编译器版本对齐 SourceMod 官方 PR 检查
+（`sourcemod/.github/workflows/pr-checks.yml` 在 `ubuntu-22.04` 上用的 `clang-14`）。
+
+两点说明：
+
+- **必须有 i386 multilib 开发库**：目标是 x86，64 位宿主上缺了这些包，
+  编译能过但**链接 32 位目标会失败**。工作流里还有一步 `-m32` 试编译，
+  提前把这类问题暴露出来。
+- **AMBuild 装在独立 venv 里**：Ubuntu 的 `python3` 受 PEP 668 保护，
+  不能直接 `pip install` 到系统环境；venv 路径通过 `$GITHUB_PATH` 注入，
+  构建脚本才能在 PATH 上找到 `ambuild` 命令。
+
+> 早期版本这里用的是 SourceMod 官方 CI 的镜像
+> `ghcr.io/alliedmodders/build-containers/debian11-clang22`，
+> 但在本仓库的 runner 上下文里该镜像拿不到 `clang++`（容器内 PATH 找不到编译器，
+> 报 `clang++: command not found`）。改为显式安装后不再依赖任何第三方镜像。
+
+### 编译参数
 
 ```bash
 python3 ../configure.py \
@@ -236,6 +269,11 @@ python3 ../configure.py \
   --mms-path=<deps>/mmsource-1.12
 ambuild
 ```
+
+`--sdks=none` 是安全的：经逐个检查 `extensions/*/AMBuilder`，
+依赖 SDK 的扩展（`cstrike` / `sdkhooks` / `sdktools` / `tf2`）都被
+`if sdk_name not in SM.sdks: continue` 守卫，SDK 列表为空时自动跳过；
+而 **geoip 属于"不依赖 SDK、直接构建"的那一类**，所以不需要任何 HL2SDK。
 
 ### PR #2335 修复的核验（`tools/build-geoip.sh` 第 0 步）
 

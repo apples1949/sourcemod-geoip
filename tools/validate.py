@@ -194,13 +194,54 @@ try:
                 ok(f"矩阵包含 SourceMod {want}")
             else:
                 bad(f"矩阵缺少 SourceMod {want}")
-        img = (build.get("container") or {}).get("image")
-        if img and "alliedmodders" in img:
-            ok(f"使用官方构建容器: {img}")
+        # 工具链必须显式安装：曾经照搬官方 CI 的第三方镜像，
+        # 结果容器里没有 clang++（PATH 中找不到编译器）导致构建直接失败。
+        if build.get("container"):
+            wrn("仍在使用 container（请确认镜像内确实有可用的 C++ 编译器）")
         else:
-            wrn(f"未使用官方构建容器: {img}")
+            ok("未依赖第三方构建镜像（工具链在本工作流内显式安装）")
+
+        env = build.get("env") or {}
+        if str(env.get("CXX", "")).strip():
+            ok(f"显式指定 C++ 编译器: {env.get('CXX')}")
+        else:
+            bad("未显式指定 CXX（依赖自动探测，容易落到不可用的编译器上）")
+
+        runner = str(build.get("runs-on", ""))
+        if runner.startswith("ubuntu-"):
+            ok(f"runner: {runner}")
+        else:
+            wrn(f"runner 非 ubuntu: {runner}")
+
         steps = build.get("steps", [])
         runs = "\n".join(str(s.get("run", "")) for s in steps)
+
+        # 关键：必须安装 i386 multilib 开发库，否则 32 位链接失败
+        if "i386" in runs and "multilib" in runs:
+            ok("安装了 i386 multilib 开发库（目标架构为 x86，必需）")
+        else:
+            bad("未安装 i386 multilib 开发库 —— 32 位（x86）链接会失败")
+
+        # AMBuild 需要 make / ar / ranlib 等基础构建工具
+        if "build-essential" in runs:
+            ok("安装了 build-essential（AMBuild 需要 make/ar/ranlib）")
+        else:
+            bad("未安装 build-essential —— AMBuild 会因缺少 make 等工具而失败")
+
+        if "GITHUB_PATH" in runs:
+            ok("把 venv 写入 GITHUB_PATH（后续步骤才能找到 ambuild）")
+        else:
+            bad("未把 venv 加入 GITHUB_PATH，构建脚本会找不到 ambuild 命令")
+
+        if "ambuild" in runs and "alliedmodders/ambuild" in runs:
+            ok("安装 AMBuild（来自 alliedmodders/ambuild）")
+        else:
+            bad("未安装 AMBuild")
+
+        if "-m32" in runs:
+            ok("自检 32 位编译能力（-m32 试编译）")
+        else:
+            wrn("未自检 32 位编译能力，multilib 缺失时会到链接阶段才报错")
 
         # 结构化检查：第二个 checkout 必须拉取 sourcemod 且带 submodule
         sm_checkout = None
