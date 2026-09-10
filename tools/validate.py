@@ -233,6 +233,39 @@ try:
             ok("Windows 使用 windows-2022 runner（自带 MSVC）")
         else:
             wrn("未指定 windows-2022 runner")
+        # cl.exe 默认不在 PATH，必须加载 VS 开发者环境，否则 AMBuild 报
+        # "Unable to find a suitable C compiler"（探测命令里编译器名是空的）
+        if "vcvarsall" in runs_all and "vswhere" in runs_all:
+            ok("用 vswhere + vcvarsall 加载 MSVC 环境")
+        else:
+            bad("未加载 MSVC 开发者环境（vcvarsall）—— Windows 上 DetectCxx 会失败")
+        if "vcvarsall.bat\" x86" in yaml.dump(build) or "vcvarsall`\" x86" in yaml.dump(build) \
+           or "vcvars`\" x86" in yaml.dump(build, allow_unicode=True):
+            ok("vcvarsall 使用 x86（目标架构是 32 位）")
+        elif "x86" in runs_all and "vcvarsall" in runs_all:
+            ok("vcvarsall 参数包含 x86（目标架构是 32 位）")
+        else:
+            wrn("未确认 vcvarsall 使用 x86 参数（32 位目标）")
+        if "cl.exe 不在 PATH" in runs_all or "command -v cl" in runs_all:
+            ok("校验 cl.exe 确实可用")
+        else:
+            wrn("未校验 cl.exe 是否真的进入 PATH")
+
+        # 写 $GITHUB_ENV 不能带 BOM：Windows PowerShell 5.1 的 `Out-File -Encoding utf8`
+        # 会写入 EF BB BF，污染文件第一行、导致其中一条变量失效（已实测确认）。
+        # 逐行去注释：yaml.dump 会转义块标量的换行，所以不能用 dump 文本按行过滤。
+        runs_lines = []
+        for s in build.get("steps", []):
+            r = s.get("run")
+            if r:
+                runs_lines.extend(r.splitlines())
+        ps_code_only = "\n".join(
+            ln for ln in runs_lines if not ln.lstrip().startswith("#"))
+        if re.search(r"Out-File[^\n]*GITHUB_ENV", ps_code_only):
+            bad("用 Out-File 写 $GITHUB_ENV：Windows PowerShell 会写入 BOM，导致首行变量失效")
+        elif "GITHUB_ENV" in ps_code_only:
+            ok("写 $GITHUB_ENV 未使用 Out-File（避免 BOM 污染）")
+
         if "matrix.cc" in str(build.get("env", {})) or "matrix.cxx" in str(build.get("env", {})):
             ok("CC/CXX 由矩阵按平台注入（Windows 留空即自动探测）")
 
@@ -533,7 +566,7 @@ if bash:
     else:
         bad(f"无效源码树未正确报错 (exit={rc}, err={err.strip()[:120]})")
 
-    # 工作流里每个 run: 都是 shell 脚本，逐条做语法检查
+    # 工作流里每个 run: 都是脚本（bash / pwsh），逐条做语法检查
     # （复用仓库自带工具，避免在这里重复实现一遍）
     wfs_tool = os.path.join(REPO, "tools", "check-workflow-shell.py")
     if os.path.isfile(wfs_tool):
@@ -541,14 +574,14 @@ if bash:
                            encoding="utf-8", errors="replace")
         lines = [l for l in (p.stdout or "").strip().splitlines() if l.strip()]
         if p.returncode == 0:
-            ok(f"工作流 shell 步骤语法检查通过（{lines[-1] if lines else ''}）")
+            ok(f"工作流脚本语法检查通过（{lines[-1] if lines else ''}）")
         else:
-            bad("工作流 shell 步骤存在语法错误（运行 tools/check-workflow-shell.py 查看）")
+            bad("工作流脚本存在语法错误（运行 tools/check-workflow-shell.py 查看）")
             for line in lines:
                 if "[FAIL]" in line:
                     print("         " + line.strip())
     else:
-        wrn("缺少 tools/check-workflow-shell.py，跳过工作流 shell 语法检查")
+        wrn("缺少 tools/check-workflow-shell.py，跳过工作流脚本语法检查")
 else:
     wrn("未找到 bash，跳过脚本语法检查")
 

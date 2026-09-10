@@ -152,6 +152,21 @@ fi
 command -v ambuild >/dev/null 2>&1 || die "PATH 上找不到 ambuild 命令（AMBuild 未安装完整，或 venv 未加入 PATH）"
 echo "[py] 使用解释器: $PY"
 
+# Windows 上必须能找到 MSVC。否则 AMBuild 的 DetectCxx 会报
+# "Unable to find a suitable C compiler"（日志里 msvc 探测的命令甚至没有编译器名），
+# 很难从表面看出是"没加载 VS 开发者环境"。这里提前给出明确指引。
+case "$(uname -s 2>/dev/null || echo unknown)" in
+  MINGW*|MSYS*|CYGWIN*)
+    if command -v cl >/dev/null 2>&1 || command -v clang-cl >/dev/null 2>&1; then
+      echo "[cc] MSVC 编译器: $(command -v cl 2>/dev/null || command -v clang-cl)"
+    else
+      die "Windows 上 PATH 里找不到 cl.exe：需要先加载 VS 开发者环境。\
+请先执行 vcvarsall.bat x86（目标架构是 32 位），例如：
+  \"\$(vswhere -latest -property installationPath)\\VC\\Auxiliary\\Build\\vcvarsall.bat\" x86"
+    fi
+    ;;
+esac
+
 # --- 0. 核验本仓库存在的目的：必须带上 SourceMod PR #2335 的中文语言码修复 ---------
 # 上游只在 master（1.13）有该修复（其后回移到 1.12-dev），1.11-dev 至今没有。
 # 本仓库源码取自 1.12-dev，天然包含；这里做一次显式核验，避免将来源码回退成

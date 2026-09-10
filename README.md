@@ -151,7 +151,7 @@ public void OnClientPostAdminCheck(int client)
 ├── tools/
 │   ├── build-geoip.sh            # 构建脚本（CI 与本地共用）
 │   ├── filter-build-scripts.py   # 裁剪 AMBuildScript：只构建 geoip 扩展
-│   ├── check-workflow-shell.py   # 对工作流里每个 run: 做 bash -n 语法检查
+│   ├── check-workflow-shell.py   # 对工作流每个 run: 做 bash -n / PowerShell AST 语法检查
 │   ├── sync-upstream.py          # 同步上游源码（带 git blob SHA 校验）
 │   └── validate.py               # 仓库自检
 ├── .gitattributes
@@ -271,14 +271,30 @@ sudo apt-get install -y clang-14 build-essential gcc-multilib g++-multilib \
 依赖清单与编译器版本对齐 SourceMod 官方 PR 检查
 （`sourcemod/.github/workflows/pr-checks.yml` 在 `ubuntu-22.04` 上用的 `clang-14`）。
 
-**Windows**：`windows-2022` runner 自带 MSVC，**不设** `CC`/`CXX`，
-交由 AMBuild 自动探测（矩阵里 Windows 条目的 `cc`/`cxx` 留空）。
-只额外需要 AMBuild 与打包工具，`patch` 若缺失会自动回退到 `git apply`。
+**Windows**：`windows-2022` runner 装了 VS Enterprise 2022，但 **`cl.exe` 默认不在 PATH**
+上 —— 直接用会得到很难懂的报错：
+
+```
+Checking CC compiler (vendor test msvc)... ['test.c', '-o', 'test-c.exe', ...]
+Compiler  for CC failed: [WinError 193] %1 is not a valid Win32 application
+CompilerNotFoundException: Unable to find a suitable C compiler
+```
+
+（注意那行命令里**编译器名是空的**，说明压根没找到 `cl.exe`。）
+
+所以工作流先用 `vswhere` 定位 VS，再执行
+`VC\Auxiliary\Build\vcvarsall.bat **x86**` 加载开发者环境，并把环境变量导出到后续步骤。
+这里传 `x86` 而不是 `amd64`，因为目标是 32 位。矩阵里 Windows 条目的 `cc`/`cxx` 留空，
+交由 AMBuild 自动探测 MSVC。
 
 > Windows runner 上预装的是 Python 3.12 + pip 26.x。注意**不要**在同一次 pip 调用里
 > 升级 pip 自身 —— 新版 pip 会直接报错拒绝：
 > `ERROR: To modify pip, please run the following command: ...`
 > 因此工作流只安装 `setuptools`/`wheel`，不升级 pip（venv 自带的 pip 足够装 AMBuild）。
+>
+> 另外，构建脚本判断 python 解释器时**不看 `command -v`**，而是以"能否真正
+> `import ambuild2`"为准：PATH 里的 `WindowsApps\python3` 是 Microsoft Store 存根
+> （存在但不可用），而 venv 在 Windows 上是 `Scripts\python.exe`、没有 `python3`。
 
 两点说明：
 
@@ -437,9 +453,11 @@ python3 tools/check-workflow-shell.py        # 只查工作流里的 shell 语�
 release 的触发条件与权限）、构建脚本关键参数、
 **工作流里每个 `run:` 的 bash 语法**，以及文本文件编码/行尾规范。
 
-> `check-workflow-shell.py` 单独存在是有原因的：工作流的 `run:` 本身就是 shell 脚本，
-> 但平时不会被任何语法检查覆盖，只有 CI 跑起来才报错、反馈很慢
+> `check-workflow-shell.py` 单独存在是有原因的：工作流的 `run:` 本身就是脚本
+> （bash 或 pwsh），但平时不会被任何语法检查覆盖，只有 CI 跑起来才报错、反馈很慢
 > （本仓库曾把 heredoc 写进 `run:` 并弄坏 YAML 缩进，就属这一类）。
+> 它用 `bash -n` 检查 bash 步骤、用 PowerShell 的 AST 解析器检查 `shell: pwsh` 步骤，
+> 并用合成脚本验证过确实能抓到错误（而不是无脑通过）。
 
 ## 许可
 
