@@ -129,20 +129,40 @@ jobs:
           # .bat 需要 CRLF
           [System.IO.File]::WriteAllText($bat, ($lines -join "`r`n") + "`r`n",
             (New-Object System.Text.ASCIIEncoding))
-          cmd /c "`"$bat`" > `"$out`""
+
+          # 必须用 Start-Process -Wait：`cmd /c "... > file"` 返回时重定向的文件句柄
+          # 可能还没释放，紧接着读会报 "being used by another process"。
+          # -Wait 会等到进程真正退出（stderr 合并进 stdout，避免警告污染解析）。
+          $p = Start-Process -FilePath 'cmd.exe' `
+                 -ArgumentList '/c', "`"$bat`"", '2>&1' `
+                 -RedirectStandardOutput $out -NoNewWindow -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "vcvarsall 批处理退出码 $($p.ExitCode)" }
           if (-not (Test-Path $out)) { throw 'vcvarsall 未产出环境变量' }
+
+          # 保险：即便进程已退出，文件偶尔仍会短暂被占用，重试若干次
+          $text = $null
+          for ($i = 0; $i -lt 20; $i++) {
+            try {
+              $text = [System.IO.File]::ReadAllText($out, [System.Text.Encoding]::UTF8)
+              break
+            } catch [System.IO.IOException] {
+              Start-Sleep -Milliseconds 200
+            }
+          }
+          if ($null -eq $text) { throw "无法读取 $out（一直处于占用状态）" }
 
           # 写 $GITHUB_ENV 必须用无 BOM 的 UTF-8：
           # Windows PowerShell 5.1 的 `Out-File -Encoding utf8` 会写入 BOM(EF BB BF)，
           # 那会污染 GITHUB_ENV 的第一行，导致第一个变量（通常是 PATH 相关）失效。
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           $count = 0
-          foreach ($line in [System.IO.File]::ReadAllLines($out, [System.Text.Encoding]::UTF8)) {
-            if ($line -match '^([^=]+)=(.*)$') {
-              [System.IO.File]::AppendAllText($env:GITHUB_ENV,
-                "$($Matches[1])=$($Matches[2])`n", $utf8NoBom)
-              $count++
-            }
+          foreach ($line in ($text -split "`r?`n")) {
+            if ($line -notmatch '^([^=]+)=(.*)$') { continue }
+            # 值里若含换行会破坏 GITHUB_ENV 的 "名=值" 格式，直接跳过
+            if ($Matches[1] -match "[`r`n]" -or $Matches[2] -match "[`r`n]") { continue }
+            [System.IO.File]::AppendAllText($env:GITHUB_ENV,
+              "$($Matches[1])=$($Matches[2])`n", $utf8NoBom)
+            $count++
           }
           Write-Host "已从 vcvarsall 载入 $count 个环境变量"
 
