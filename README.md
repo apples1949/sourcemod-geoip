@@ -53,19 +53,15 @@ GeoIP 扩展 `geoip.ext.so`。
 ### 从 Releases 下载（推荐）
 
 打 `v*` 标签（如 `v1.0.0`）后，Actions 会自动创建 Release，附件按 SourceMod 版本打包，
-每个包内含 **Linux 与 Windows** 两个二进制：
+每个包**打开后只有一层 `extensions/`**：
 
 | Release 附件 | 适用 SourceMod | 内含 |
 | --- | --- | --- |
-| `geoip-ext-1.11-dev.zip` | SourceMod 1.11 | `geoip.ext.so`（Linux）+ `geoip.ext.dll`（Windows） |
-| `geoip-ext-1.12-dev.zip` | SourceMod 1.12 | `geoip.ext.so`（Linux）+ `geoip.ext.dll`（Windows） |
+| `geoip-ext-1.11-dev.zip` | SourceMod 1.11 | `extensions/geoip.ext.so`、`extensions/geoip.ext.dll` |
+| `geoip-ext-1.12-dev.zip` | SourceMod 1.12 | `extensions/geoip.ext.so`、`extensions/geoip.ext.dll` |
 | `SHA256SUMS.txt` | — | 上面两个包的校验和 |
 
-```bash
-# 发布一个版本
-git tag v1.0.0
-git push origin v1.0.0
-```
+发版方式见下方「发布新版本」（**只有推 `v*` 标签才会发 Release**）。
 
 也可以在每次 Actions 运行页的 **Artifacts** 里拿到**分平台**的包
 （`geoip-ext-<版本>-<平台>.zip`，含 `.sha256` 校验和）。
@@ -75,27 +71,33 @@ git push origin v1.0.0
 
 ### 安装
 
-1. 解压到服务端根目录（包内已按 `addons/sourcemod/extensions/` 组织好目录结构）：
+压缩包打开后只有一层 `extensions/`，按平台取用其中一个文件：
 
-   ```
-   <游戏服务端>/
-   └── addons/sourcemod/extensions/
-       ├── geoip.ext.so      # Linux 服务端用这个
-       └── geoip.ext.dll     # Windows 服务端用这个
-   ```
+```
+extensions/
+├── geoip.ext.so      # Linux 服务端用这个
+├── geoip.ext.dll     # Windows 服务端用这个
+└── README.txt
+```
 
-2. 下载 GeoIP 数据库（**不包含在本仓库中**），放到
-   `addons/sourcemod/configs/geoip/`，文件名使用 `GeoLite2-City.mmdb`：
+把它放进服务端的 `addons/sourcemod/extensions/` 目录：
 
-   ```bash
-   # 需要 MaxMind 账号（免费注册后获取 license key）
-   curl -fsSL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=<YOUR_LICENSE_KEY>&suffix=tar.gz" \
-     -o GeoLite2-City.tar.gz
-   tar -xzf GeoLite2-City.tar.gz --strip-components=1 --wildcards '*/GeoLite2-City.mmdb' \
-     -C addons/sourcemod/configs/geoip/
-   ```
+```
+<游戏服务端>/addons/sourcemod/extensions/geoip.ext.so     # Linux；Windows 换 .dll
+```
 
-3. 重启服务端（或 `sm exts load geoip`），用 `sm exts list` 确认 GeoIP 已加载。
+然后下载 GeoIP 数据库（**不包含在发布包里**），放到
+`addons/sourcemod/configs/geoip/`，文件名使用 `GeoLite2-City.mmdb`：
+
+```bash
+# 需要 MaxMind 账号（免费注册后获取 license key）
+curl -fsSL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=<YOUR_LICENSE_KEY>&suffix=tar.gz" \
+  -o GeoLite2-City.tar.gz
+tar -xzf GeoLite2-City.tar.gz --strip-components=1 --wildcards '*/GeoLite2-City.mmdb' \
+  -C addons/sourcemod/configs/geoip/
+```
+
+最后重启服务端（或 `sm exts load geoip`），用 `sm exts list` 确认 GeoIP 已加载。
 
 扩展启动时会检查数据库文件：若数据库缺失或过期超过 90 天，会在 SourceMod 日志中给出提示。
 
@@ -421,6 +423,42 @@ SDK 名去找 `hl2sdk-none`，直接报 `Missing hl2sdks: none`。
   `SOURCEMOD_VERSION` / `SOURCEMOD_BUILD_TIME`，这些宏由构建期的 versionlib 生成。
 
 上游编译开启 `-Werror`，因此改动源码时必须零警告通过。
+
+## 发布新版本
+
+**只有推送 `v*` 标签才会发 Release** —— 推 `main` 分支只跑构建、不发版
+（release job 带 `if: startsWith(github.ref, 'refs/tags/v')`）。
+
+### 方式一：命令行
+
+```bash
+git tag -a v1.0.0 -m "v1.0.0: GeoIP extension with PR #2335 Chinese fix"
+git push origin v1.0.0
+```
+
+> `git push` **不会**连带推标签，必须显式 `git push origin v1.0.0`。
+
+### 方式二：纯网页（不需要命令行）
+
+1. 打开 `https://github.com/<owner>/<repo>/releases/new`
+2. **Choose a tag** 里直接输入 `v1.0.0`，点 **"Create new tag: v1.0.0 on publish"**
+3. **Target** 选 `main`，写点说明，点 **Publish release**
+
+GitHub 发布时创建标签 → 触发构建 → 构建全部成功后 workflow 会把
+`geoip-ext-1.11-dev.zip`、`geoip-ext-1.12-dev.zip`、`SHA256SUMS.txt`
+作为附件补到这条 Release 上（你写的说明会保留）。
+
+### 标签打错了怎么删
+
+- **网页**：`.../tags` 页面找到该标签 → **⋯** → **Delete**
+  （注意：删 Release **不会**自动删标签，要分别删）
+- **命令行**：
+  ```bash
+  git push --delete origin v1.0.0
+  git tag -d v1.0.0
+  ```
+
+改了 workflow 后要重发同一版本号，需要先删标签+Release，推送新代码，再重新打标签。
 
 ## 同步上游更新
 

@@ -439,12 +439,33 @@ jobs:
           set -euo pipefail
           # 全程用 python 的 zipfile：不依赖 zip/unzip 是否存在
           # （build job 那边已因 tar/zip 的工具差异踩过坑），跨平台一致。
+          #
+          # 包内结构刻意做成**只有一层 extensions/**：
+          #     extensions/geoip.ext.so
+          #     extensions/geoip.ext.dll
+          #     extensions/README.txt
+          # 解压后直接就是扩展文件夹，不再套 addons/sourcemod/ 两层目录。
           python - <<'PYEOF'
           import os, shutil, sys, zipfile
 
+          README = """\
+          SourceMod GeoIP extension (built with the PR #2335 Chinese-language fix)
+          ========================================================================
+
+          Pick the file for your server platform and copy it into
+          addons/sourcemod/extensions/ on your game server:
+
+            Linux   -> geoip.ext.so
+            Windows -> geoip.ext.dll
+
+          You also need the GeoIP database (not included here). Put
+          GeoLite2-City.mmdb into addons/sourcemod/configs/geoip/ .
+          See the repository README for details.
+          """
+
           found_any = {}
           for sm in ("1.11-dev", "1.12-dev"):
-              stage = os.path.join("stage", sm, "addons", "sourcemod", "extensions")
+              stage = os.path.join("stage", sm, "extensions")
               os.makedirs(stage, exist_ok=True)
               for osname in ("linux", "windows"):
                   src_dir = os.path.join("artifacts", "geoip-ext-%s-%s" % (sm, osname))
@@ -458,9 +479,9 @@ jobs:
                               if not n.startswith("addons/sourcemod/extensions/"):
                                   continue
                               if not (n.endswith(".so") or n.endswith(".dll")):
-                                  continue
-                              with z.open(n) as fsrc, \
-                                   open(os.path.join(stage, os.path.basename(n)), "wb") as fdst:
+                                  continue   # 过滤掉 README.txt 等杂物
+                              dst = os.path.join(stage, os.path.basename(n))
+                              with z.open(n) as fsrc, open(dst, "wb") as fdst:
                                   shutil.copyfileobj(fsrc, fdst)
                               print("  + %s: %s" % (sm, os.path.basename(n)))
                               found_any[sm] = True
@@ -468,9 +489,12 @@ jobs:
               if not found_any.get(sm):
                   sys.exit("error: %s has no artifacts" % sm)
 
+              with open(os.path.join(stage, "README.txt"), "w", newline="\n") as fp:
+                  fp.write(README)
+
               os.makedirs("release", exist_ok=True)
               out = os.path.join("release", "geoip-ext-%s.zip" % sm)
-              base = os.path.join("stage", sm)
+              base = os.path.join("stage", sm)          # 归档内顶层就是 extensions/
               with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
                   for dirpath, dirnames, filenames in os.walk(base):
                       dirnames.sort()
@@ -500,10 +524,16 @@ jobs:
 
             | 下载 | 适用 SourceMod | 内含 |
             | --- | --- | --- |
-            | `geoip-ext-1.11-dev.zip` | SourceMod 1.11 | `geoip.ext.so`（Linux）+ `geoip.ext.dll`（Windows） |
-            | `geoip-ext-1.12-dev.zip` | SourceMod 1.12 | `geoip.ext.so`（Linux）+ `geoip.ext.dll`（Windows） |
+            | `geoip-ext-1.11-dev.zip` | SourceMod 1.11 | `extensions/geoip.ext.so`、`extensions/geoip.ext.dll` |
+            | `geoip-ext-1.12-dev.zip` | SourceMod 1.12 | `extensions/geoip.ext.so`、`extensions/geoip.ext.dll` |
 
-            安装：把压缩包解压到服务端根目录（包内已按 `addons/sourcemod/extensions/` 组织）。
+            压缩包打开后只有一层 `extensions/`，按平台取用其中一个：
+
+            - Linux 服务端 → `geoip.ext.so`
+            - Windows 服务端 → `geoip.ext.dll`
+
+            把它放进服务端的 `addons/sourcemod/extensions/` 目录，然后重启服务端
+            （或 `sm exts load geoip`），用 `sm exts list` 确认已加载。
 
             还需自行准备 GeoIP 数据库 `GeoLite2-City.mmdb`，放到
             `addons/sourcemod/configs/geoip/`，详见仓库 README。
