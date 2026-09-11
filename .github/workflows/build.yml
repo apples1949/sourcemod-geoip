@@ -437,41 +437,48 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # 需要 unzip/zip；ubuntu runner 自带，缺了则补装
-          if ! command -v unzip >/dev/null 2>&1 || ! command -v zip >/dev/null 2>&1; then
-            sudo apt-get update -qq && sudo apt-get install -y -qq unzip zip
-          fi
+          # 全程用 python 的 zipfile：不依赖 zip/unzip 是否存在
+          # （build job 那边已因 tar/zip 的工具差异踩过坑），跨平台一致。
+          python - <<'PYEOF'
+          import os, shutil, sys, zipfile
 
-          mkdir -p release
+          found_any = {}
+          for sm in ("1.11-dev", "1.12-dev"):
+              stage = os.path.join("stage", sm, "addons", "sourcemod", "extensions")
+              os.makedirs(stage, exist_ok=True)
+              for osname in ("linux", "windows"):
+                  src_dir = os.path.join("artifacts", "geoip-ext-%s-%s" % (sm, osname))
+                  if not os.path.isdir(src_dir):
+                      continue
+                  for fn in sorted(os.listdir(src_dir)):
+                      if not fn.endswith(".zip"):
+                          continue
+                      with zipfile.ZipFile(os.path.join(src_dir, fn)) as z:
+                          for n in z.namelist():
+                              if not n.startswith("addons/sourcemod/extensions/"):
+                                  continue
+                              if not (n.endswith(".so") or n.endswith(".dll")):
+                                  continue
+                              with z.open(n) as fsrc, \
+                                   open(os.path.join(stage, os.path.basename(n)), "wb") as fdst:
+                                  shutil.copyfileobj(fsrc, fdst)
+                              print("  + %s: %s" % (sm, os.path.basename(n)))
+                              found_any[sm] = True
 
-          for sm in 1.11-dev 1.12-dev; do
-            stage="stage/$sm"
-            mkdir -p "$stage/addons/sourcemod/extensions"
+              if not found_any.get(sm):
+                  sys.exit("error: %s has no artifacts" % sm)
 
-            found=0
-            for os in linux windows; do
-              for f in artifacts/geoip-ext-$sm-$os/*.zip; do
-                [ -f "$f" ] || continue
-                # 从各平台包里取出扩展二进制，合并到同一个包
-                tmp="unpack/$sm-$os"
-                mkdir -p "$tmp"
-                unzip -q -o "$f" -d "$tmp"
-                for bin in "$tmp"/addons/sourcemod/extensions/*; do
-                  [ -f "$bin" ] || continue
-                  cp -f "$bin" "$stage/addons/sourcemod/extensions/"
-                  echo "  + $sm: $(basename "$bin")"
-                  found=1
-                done
-              done
-            done
-
-            if [ "$found" -eq 0 ]; then
-              echo "::error::$sm 没有任何产物"
-              exit 1
-            fi
-
-            ( cd "$stage" && zip -r9 "$GITHUB_WORKSPACE/release/geoip-ext-$sm.zip" addons )
-          done
+              os.makedirs("release", exist_ok=True)
+              out = os.path.join("release", "geoip-ext-%s.zip" % sm)
+              base = os.path.join("stage", sm)
+              with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+                  for dirpath, dirnames, filenames in os.walk(base):
+                      dirnames.sort()
+                      for f in sorted(filenames):
+                          full = os.path.join(dirpath, f)
+                          z.write(full, os.path.relpath(full, base).replace(os.sep, "/"))
+              print("wrote %s (%d bytes)" % (out, os.path.getsize(out)))
+          PYEOF
 
           cd release
           sha256sum *.zip > SHA256SUMS.txt
